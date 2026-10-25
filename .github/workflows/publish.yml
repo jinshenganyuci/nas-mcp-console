@@ -1,0 +1,92 @@
+name: Publish container images
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version, for example 0.2.0'
+        required: true
+        default: '0.2.0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-container-images
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Select release version
+        id: release
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+        run: |
+          version="${REQUESTED_VERSION:-${REF_NAME#v}}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Expected a stable semantic version'; exit 1; }
+          [[ "$DOCKERHUB_USERNAME" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { echo 'Configure DOCKERHUB_USERNAME repository variable'; exit 1; }
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Build native image for runtime checks
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: nas-mcp-console:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Verify first boot and persistent credentials
+        run: sh tests/container-smoke.sh nas-mcp-console:smoke
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to Docker Hub
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and publish amd64 and arm64
+        id: image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.release.outputs.version }}
+            ghcr.io/${{ github.repository }}:latest
+            docker.io/${{ vars.DOCKERHUB_USERNAME }}/nas-mcp-console:${{ steps.release.outputs.version }}
+            docker.io/${{ vars.DOCKERHUB_USERNAME }}/nas-mcp-console:latest
+          labels: |
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Record published digest
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          printf 'Version: `%s`\n\nDigest: `%s`\n' "$VERSION" "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"

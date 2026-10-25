@@ -1,0 +1,36 @@
+services:
+  nas-mcp:
+    image: "${MCP_IMAGE:-docker.io/jinshenganyuci/nas-mcp-console:0.2.0}"
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:${MCP_PORT:-8090}:8090"
+    environment:
+      NAS_MCP_DATA: /data
+      NAS_MCP_ALLOWED_HOSTS: "${ALLOWED_HOSTS:-}"
+    volumes:
+      - nas-mcp-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    pids_limit: 128
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
+
+volumes:
+  nas-mcp-data:
+    name: "${MCP_DATA_VOLUME:-nas-mcp-data}"
