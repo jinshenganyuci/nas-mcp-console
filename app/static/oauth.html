@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>连接授权 · 私人凭据库</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/oauth.css">
+  <script src="/static/oauth.js" defer></script>
+</head>
+<body>
+  <main class="oauth-shell">
+    <article class="oauth-card" aria-labelledby="oauth-title">
+      <header class="oauth-header">
+        <span class="brand-icon" aria-hidden="true">M</span>
+        <div><p class="eyebrow">PRIVATE CREDENTIAL VAULT</p><h1 id="oauth-title">连接到私人凭据库</h1></div>
+      </header>
+
+      <div id="oauth-loading" class="loading" role="status">正在读取授权请求…</div>
+      <div id="oauth-error" class="notice error" role="alert" hidden></div>
+
+      <section id="oauth-client" class="oauth-client" aria-label="申请授权的客户端" hidden>
+        <p class="oauth-label">正在申请访问的客户端</p>
+        <h2 id="client-name"></h2>
+        <div class="oauth-domain"><span>回调域名</span><strong id="client-domain"></strong></div>
+      </section>
+
+      <section id="oauth-login" hidden>
+        <p class="oauth-intro">登录你的凭据库，然后选择允许此客户端读取的凭据。</p>
+        <form id="oauth-login-form">
+          <label class="field"><span class="field-label">凭据库管理密码</span><input id="oauth-password" name="password" type="password" autocomplete="current-password" required placeholder="输入此凭据库的管理密码"></label>
+          <p class="hint oauth-password-note">密码只提交给当前凭据库，不会发送给申请授权的客户端。</p>
+          <div id="login-error" class="field-error" role="alert" hidden></div>
+          <div class="oauth-actions"><button id="close-login" class="button secondary" type="button">关闭窗口取消</button><button id="login-submit" class="button primary" type="submit">登录并继续</button></div>
+        </form>
+      </section>
+
+      <section id="oauth-setup" hidden>
+        <div class="notice info">首次使用需要先修改初始管理密码。请在管理后台完成设置，再回到这里继续；本次还没有授予任何权限。</div>
+        <div class="oauth-actions"><a class="button secondary" href="/admin" target="_blank" rel="noopener noreferrer">打开管理后台</a><button id="reload-request" class="button primary" type="button">已完成，重新加载</button></div>
+      </section>
+
+      <form id="oauth-consent-form" hidden>
+        <h2 class="oauth-section-title">允许读取哪些凭据？</h2>
+        <p class="oauth-intro">同意后，此客户端可读取授权范围内的真实账号、密码、密钥或 Token。本次授权有效 30 天，期间可重复读取，到期后重新连接。你可以随时在管理后台撤销授权。</p>
+        <fieldset class="oauth-scope-modes">
+          <legend class="oauth-visually-hidden">凭据读取范围</legend>
+          <label class="oauth-scope-mode"><input name="scope_mode" type="radio" value="selected" checked><span><strong>仅指定的凭据</strong><span class="hint">只允许下方选中的条目。</span></span></label>
+          <label class="oauth-scope-mode"><input name="scope_mode" type="radio" value="all"><span><strong>全部凭据</strong><span class="hint">包括当前所有条目，以及今后新增的条目。</span></span></label>
+        </fieldset>
+        <fieldset id="credential-picker" class="oauth-credential-picker">
+          <legend class="field-label">选择凭据</legend>
+          <div id="credential-options"></div>
+          <p id="empty-credentials" class="hint" hidden>当前没有凭据条目。可以先到管理后台添加，或明确选择授权全部凭据以包含今后新增的条目。</p>
+        </fieldset>
+        <p id="selection-summary" class="hint oauth-selection-summary" aria-live="polite">请至少选择一条凭据。</p>
+        <div id="decision-error" class="field-error" role="alert" hidden></div>
+        <div class="oauth-actions"><button id="deny-submit" class="button secondary" type="button">取消授权</button><button id="approve-submit" class="button primary" type="submit" disabled>同意并继续</button></div>
+      </form>
+
+      <footer class="oauth-footer"><p id="oauth-status" role="status"></p><span>私人凭据库 · 只授权你选择的范围</span></footer>
+    </article>
+    <noscript><p class="notice error">请开启 JavaScript 后继续授权。</p></noscript>
+  </main>
+</body>
+</html>

@@ -3,7 +3,7 @@
 (() => {
   const $ = (selector, root = document) => root.querySelector(selector);
   const demo = new URLSearchParams(location.search).get('demo') === '1';
-  const state = { session: null, services: [], clients: [], settings: {}, view: 'services' };
+  const state = { session: null, services: [], clients: [], oauthGrants: [], settings: {}, view: 'services' };
   const kinds = { cloudflare: 'Cloudflare', ssh: 'SSH', alist: 'Alist', github: 'GitHub', docker: '镜像仓库' };
   const content = $('#content');
   const modal = $('#modal');
@@ -104,7 +104,7 @@
 
   function prettyDate(value) {
     if (!value) return '尚未使用';
-    const date = new Date(value);
+    const date = new Date(typeof value === 'number' && value < 1e12 ? value * 1000 : value);
     if (Number.isNaN(date.getTime())) return String(value);
     return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(date);
   }
@@ -124,11 +124,12 @@
   }
 
   async function loadWorkspace() {
-    const [services, clients, settings] = await Promise.all([
-      api('/api/services'), api('/api/clients'), api('/api/settings'),
+    const [services, clients, settings, oauthGrants] = await Promise.all([
+      api('/api/services'), api('/api/clients'), api('/api/settings'), api('/api/oauth/grants'),
     ]);
     state.services = services.services || [];
     state.clients = (clients.clients || []).filter(client => !client.revoked_at);
+    state.oauthGrants = (oauthGrants.grants || []).filter(grant => !grant.revoked_at);
     state.settings = settings;
     showWorkspace();
   }
@@ -183,7 +184,7 @@
     content.append(node('div', { class: 'stats-grid' },
       stat('凭据条目', state.services.length, '按服务类型归类保存'),
       stat('密码与密钥', secretCount, '仅显示是否已保存'),
-      stat('已授权客户端', state.clients.length, '按范围读取，随时撤销'),
+      stat('已授权客户端', state.clients.length + state.oauthGrants.filter(grant => !grantExpired(grant)).length, '按范围读取，随时撤销'),
     ));
     content.append(node('div', { class: 'notice info credential-disclosure' }, node('strong', {}, 'MCP 会返回所选凭据'), node('span', {}, '客户端调用 get_credentials 时，选中的账号、密码或密钥值会返回给该调用客户端。请在「客户端授权」中设置可读取范围。')));
     content.append(node('div', { class: 'section-heading' }, node('div', {}, node('h2', {}, '已保存的凭据'), node('p', {}, 'Cloudflare、SSH、Alist、GitHub 与镜像仓库')), node('span', { class: 'badge neutral' }, `${state.services.length} 个条目`)));
@@ -416,6 +417,17 @@
     return allowedServices.join('、');
   }
 
+  function grantExpired(grant) {
+    if (!grant.expires_at) return false;
+    const value = grant.expires_at;
+    return new Date(typeof value === 'number' && value < 1e12 ? value * 1000 : value).getTime() <= Date.now();
+  }
+
+  function callbackDomain(value) {
+    try { return new URL(value).host || '未提供回调域名'; }
+    catch { return '未提供回调域名'; }
+  }
+
   function renderClients() {
     content.append(pageHeading('授权客户端读取凭据', '为每个客户端创建独立密钥，并选择它可以读取的条目。', button('＋ 创建客户端密钥', clientDialog, 'primary')));
     content.append(node('div', { class: 'notice info credential-disclosure' }, node('strong', {}, '授权范围决定客户端可以取得哪些凭据值'), node('span', {}, 'get_credentials 会把选中凭据的明文返回给调用客户端。客户端可以在该范围内重复读取，直到你撤销授权。')));
@@ -433,8 +445,20 @@
     }
     if (!state.clients.length) list.append(node('div', { class: 'empty-state compact' }, node('h3', {}, '还没有客户端授权'), node('p', {}, '创建一个密钥，并选择允许读取的凭据。')));
     content.append(node('section', { class: 'panel' }, node('div', { class: 'panel-heading' }, node('h2', {}, '已授权客户端'), node('span', { class: 'badge neutral' }, `${state.clients.length} 个`)), list));
+    const oauthList = node('div', { class: 'client-list' });
+    for (const grant of state.oauthGrants) {
+      const expired = grantExpired(grant);
+      oauthList.append(node('div', { class: 'client-row' }, node('div', { class: 'client-icon', 'aria-hidden': 'true' }, '↗'), node('div', { class: 'client-details' }, node('h3', {}, grant.name || grant.client_id), node('p', {}, `回调域名：${callbackDomain(grant.redirect_uri)}`), node('p', {}, `授权于 ${prettyDate(grant.created_at)} · 最近使用 ${prettyDate(grant.last_used)}`), node('p', { class: 'client-scope' }, `读取范围：${scopeDescription(grant.allowed_services)}`), grant.expires_at ? node('p', {}, `有效期至 ${prettyDate(grant.expires_at)}`) : null), node('span', { class: `badge ${expired ? 'neutral' : 'success'}` }, expired ? '已过期' : '已授权'), button('撤销', () => confirmDialog('撤销网页登录授权', `撤销「${grant.name || grant.client_id}」后，该客户端将无法继续使用这份 OAuth 授权读取凭据。`, async () => {
+        await api(`/api/oauth/grants/${encodeURIComponent(grant.id)}`, { method: 'DELETE' });
+        state.oauthGrants = state.oauthGrants.filter(item => item.id !== grant.id);
+        setView('clients');
+        toast('网页登录授权已撤销。');
+      }, '撤销授权'), 'ghost danger small')));
+    }
+    if (!state.oauthGrants.length) oauthList.append(node('div', { class: 'empty-state compact' }, node('h3', {}, '还没有网页登录授权'), node('p', {}, '客户端通过 OAuth 连接后，可在这里查看范围并撤销授权。')));
+    content.append(node('section', { class: 'panel' }, node('div', { class: 'panel-heading' }, node('div', {}, node('h2', {}, '网页登录授权（OAuth）'), node('p', {}, '在本库登录并同意后建立的授权，不会显示或回读登录令牌。')), node('span', { class: 'badge neutral' }, `${state.oauthGrants.length} 个`)), oauthList));
     const snippet = `[mcp_servers.my_nas]\nurl = ${JSON.stringify(endpointValue)}\nbearer_token_env_var = "NAS_MCP_TOKEN"`;
-    content.append(node('section', { class: 'panel' }, node('div', { class: 'panel-heading' }, node('div', {}, node('h2', {}, '桌面客户端配置示例'), node('p', {}, '将 NAS_MCP_TOKEN 设置为创建的客户端密钥，保存后即可复用。')), button('复制配置', event => copy(snippet, event.currentTarget), 'secondary small')), node('div', { class: 'panel-body' }, node('pre', { class: 'code-block' }, snippet), node('p', { class: 'hint' }, '需要 OAuth 的客户端还需配置兼容的外部身份提供方；开启设置本身不会完成登录接入。'))));
+    content.append(node('section', { class: 'panel' }, node('div', { class: 'panel-heading' }, node('div', {}, node('h2', {}, '桌面客户端配置示例'), node('p', {}, '将 NAS_MCP_TOKEN 设置为创建的客户端密钥，保存后即可复用。')), button('复制配置', event => copy(snippet, event.currentTarget), 'secondary small')), node('div', { class: 'panel-body' }, node('pre', { class: 'code-block' }, snippet), node('p', { class: 'hint' }, '支持 OAuth 的客户端可使用同一 MCP 地址。填写公网 HTTPS 地址即可使用内置 OAuth；外部身份提供方仅为高级选项。'))));
   }
 
   function clientDialog() {
@@ -485,16 +509,17 @@
   function lines(value) { return value.split(/[\n,]/).map(item => item.trim()).filter(Boolean); }
 
   function renderSettings() {
-    content.append(pageHeading('设置访问入口', 'MCP 访问地址、允许的主机名与可选的外部 OAuth 验证。'));
+    content.append(pageHeading('设置访问入口', '填写公网 HTTPS 地址即可使用内置 OAuth；外部身份提供方仅为高级选项。'));
     const settings = state.settings;
     const oauth = settings.oauth || {};
     const form = node('form', { id: 'settings-form' });
     const url = textInput('public_url', settings.public_url || '', { type: 'url', placeholder: 'https://mcp.example.com' });
     const hosts = node('textarea', { name: 'allowed_hosts', rows: 3, value: (settings.allowed_hosts || []).join('\n'), placeholder: 'mcp.example.com\n192.168.1.10', spellcheck: false });
-    form.append(node('section', { class: 'panel' }, node('div', { class: 'panel-heading' }, node('div', {}, node('h2', {}, '入口地址'), node('p', {}, '内网访问可留空，自动使用当前地址；公网填写已配置 HTTPS 的域名。'))), node('div', { class: 'panel-body' }, field('对外连接地址', url, '内网可留空；自定义对外地址请使用 HTTPS，例如 https://mcp.example.com。'), field('允许的 Host', hosts, '每行一个域名或 IP，不包含协议、路径或端口。'))));
+    form.append(node('section', { class: 'panel' }, node('div', { class: 'panel-heading' }, node('div', {}, node('h2', {}, '入口地址'), node('p', {}, '内网访问可留空，自动使用当前地址；公网填写已配置 HTTPS 的域名。'))), node('div', { class: 'panel-body' }, field('对外连接地址', url, '内网可留空；内置 OAuth 需要公网 HTTPS 地址，例如 https://mcp.example.com。'), field('额外访问域名（选填）', hosts, '对外连接地址的域名会自动允许，无需填写客户端 IP。其他访问域名每行一个，不含协议、路径或端口。'), node('p', { class: 'hint' }, settings.oauth ? '当前使用外部 OAuth 验证；保留此配置时不会切换为内置 OAuth。' : settings.public_url ? '已设置对外连接地址，将使用内置 OAuth 登录与授权。访问设置修改后按页面提示重启服务。' : '保存公网 HTTPS 地址并重启服务后，客户端即可使用本库的 OAuth 登录与授权。'))));
     const enabled = node('input', { type: 'checkbox', name: 'oauth_enabled', checked: Boolean(settings.oauth) });
     const oauthFields = node('div', { class: 'oauth-fields', hidden: !settings.oauth });
-    enabled.addEventListener('change', () => { oauthFields.hidden = !enabled.checked; });
+    let externalConfig = settings.oauth;
+    let externalChanged = false;
     const controls = {
       issuer_url: textInput('issuer_url', oauth.issuer_url || '', { type: 'url', placeholder: 'https://auth.example.com/realms/nas' }),
       resource_server_url: textInput('resource_server_url', oauth.resource_server_url || endpoint(), { type: 'url', placeholder: 'https://mcp.example.com/mcp' }),
@@ -503,8 +528,20 @@
       allowed_subjects: node('textarea', { name: 'allowed_subjects', rows: 2, value: (oauth.allowed_subjects || []).join('\n'), spellcheck: false, placeholder: '你的身份提供方用户 subject ID' }),
       required_scopes: textInput('required_scopes', (oauth.required_scopes || []).join(', '), { placeholder: '例如 mcp:read' }),
     };
-    oauthFields.append(node('div', { class: 'notice info' }, '此功能需要已配置好的外部 OAuth 身份提供方。打开开关不会自动完成网页登录或创建授权服务。'), node('div', { class: 'field-grid' }, field('Issuer URL', controls.issuer_url), field('MCP 资源地址', controls.resource_server_url), field('Audience', controls.audience), field('JWKS URL', controls.jwks_url)), field('允许的用户 Subject', controls.allowed_subjects, '每行一个。列出的 OAuth 身份视为库所有者，可读取全部凭据；需要限制到指定条目时，请使用客户端 Token。'), field('必需的 Scopes', controls.required_scopes, '用逗号分隔，必须与身份提供方授予的权限一致。'));
-    form.append(node('section', { class: 'panel' }, node('div', { class: 'panel-heading' }, node('div', {}, node('h2', {}, 'OAuth 连接'), node('p', {}, '供需要 OAuth 登录的网页或其他客户端使用。'))), node('div', { class: 'panel-body' }, node('label', { class: 'check-line' }, enabled, node('span', {}, node('strong', {}, '启用外部 OAuth 验证'), node('span', { class: 'hint' }, '已有 Bearer Token 的桌面客户端仍可继续使用。'))), oauthFields)));
+    const syncExternal = () => {
+      oauthFields.hidden = !enabled.checked;
+      for (const control of Object.values(controls)) control.disabled = !enabled.checked;
+    };
+    enabled.addEventListener('change', () => { externalChanged = true; syncExternal(); });
+    syncExternal();
+    for (const control of Object.values(controls)) {
+      control.addEventListener('input', () => { externalChanged = true; });
+      control.addEventListener('change', () => { externalChanged = true; });
+    }
+    oauthFields.append(node('div', { class: 'notice info' }, '仅在你已有外部身份提供方时使用此选项。启用后改用外部 OAuth 验证，登录站点和授权流程由该提供方负责；使用内置 OAuth 无需填写这些字段。'), node('div', { class: 'field-grid' }, field('Issuer URL', controls.issuer_url), field('MCP 资源地址', controls.resource_server_url), field('Audience', controls.audience), field('JWKS URL', controls.jwks_url)), field('允许的用户 Subject', controls.allowed_subjects, '每行一个。列出的外部 OAuth 身份视为库所有者，可读取全部凭据；需要条目范围时，可使用内置 OAuth 或客户端 Token。'), field('必需的 Scopes', controls.required_scopes, '用逗号分隔，必须与身份提供方授予的权限一致。'));
+    const advanced = node('details', { class: 'panel' }, node('summary', { class: 'panel-heading' }, node('h2', {}, '外部 OAuth 提供方（高级选项）')), node('div', { class: 'panel-body' }, node('label', { class: 'check-line' }, enabled, node('span', {}, node('strong', {}, '启用外部 OAuth 验证'), node('span', { class: 'hint' }, '关闭后使用内置 OAuth，需要先设置公网 HTTPS 地址。已有 Bearer Token 客户端仍可使用。'))), oauthFields));
+    advanced.open = Boolean(settings.oauth);
+    form.append(advanced);
     const submit = node('button', { class: 'button primary', type: 'submit' }, '保存访问设置');
     const resultLine = node('div', { class: 'notice success', role: 'status', hidden: true });
     form.append(resultLine, node('div', { class: 'actions' }, node('span', { class: 'hint' }, '部分访问设置需要重启服务后生效；容器部署可通过 Compose 重启。'), submit));
@@ -513,7 +550,9 @@
       if (demo) return demoNotice();
       busy(submit, async () => {
         let oauthPayload = null;
-        if (enabled.checked) {
+        if (enabled.checked && externalConfig && !externalChanged) {
+          oauthPayload = externalConfig;
+        } else if (enabled.checked) {
           for (const name of ['issuer_url', 'resource_server_url', 'audience', 'jwks_url']) {
             if (!controls[name].value.trim()) throw new Error(`请填写 OAuth 的 ${name}。`);
           }
@@ -522,6 +561,8 @@
         const payload = { public_url: url.value.trim(), allowed_hosts: lines(hosts.value), oauth: oauthPayload };
         const result = await api('/api/settings', { method: 'PUT', body: payload });
         state.settings = payload;
+        externalConfig = oauthPayload;
+        externalChanged = false;
         resultLine.textContent = result.restart_required ? '设置已保存。请重启服务使访问设置生效；容器部署可在 Compose 管理中重启。' : '访问设置已保存。';
         resultLine.hidden = false;
         toast('访问设置已保存。');
@@ -592,6 +633,7 @@
       state.session = null;
       state.services = [];
       state.clients = [];
+      state.oauthGrants = [];
       state.settings = {};
       showAuth(false);
     });
@@ -602,6 +644,7 @@
   function loadDemo() {
     state.session = { authenticated: true, must_change_password: false, csrf_token: '' };
     state.settings = { public_url: 'https://mcp.example.com', allowed_hosts: ['mcp.example.com'], oauth: null };
+    state.oauthGrants = [];
     state.clients = [
       { id: 'demo-mac', name: '我的 Mac · Codex', allowed_services: ['*'], created_at: '2026-10-24T08:00:00Z', last_used: null },
       { id: 'demo-laptop', name: '工作笔记本', allowed_services: ['github/personal-github', 'docker/ghcr-images'], created_at: '2026-10-24T09:00:00Z', last_used: null },

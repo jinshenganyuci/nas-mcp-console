@@ -4,7 +4,7 @@
 services: # 此 Compose 项目包含的服务
   nas-mcp: # 服务名称，在飞牛中用于识别此应用
     # 拉取已发布镜像；升级时修改末尾版本号即可
-    image: docker.io/jinshenganyuci/nas-mcp-console:0.2.1
+    image: docker.io/jinshenganyuci/nas-mcp-console:0.3.0
 
     # NAS 或 Docker 重启后自动恢复；手动停止后保持停止
     restart: unless-stopped

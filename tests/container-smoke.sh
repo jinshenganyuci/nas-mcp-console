@@ -89,6 +89,8 @@ assert 'synthetic-container-credential' not in (data / 'vault.json').read_text()
 print('First boot, non-root bind-mount access, login, and encrypted save passed')
 PY
 
+python3 tests/oauth-container-probe.py start "$smoke_dir/oauth-checkpoint.json"
+
 # Recreate the container rather than only restarting its process.
 compose up -d --force-recreate --wait --wait-timeout 90
 compose exec -T nas-mcp python - "$smoke_uid" "$smoke_gid" <<'PY'
@@ -108,8 +110,10 @@ record = store.export_credential('ssh/容器持久化测试', ['*'])
 assert record['alias'] == '容器持久化测试'
 assert record['credentials']['password'] == 'synthetic-container-credential'
 assert not Path('/data/first-login.txt').exists()
-for name in ('master.key', 'vault.json', 'state.json'):
+for name in ('master.key', 'vault.json', 'state.json', 'oauth.json'):
     assert (data / name).stat().st_uid == uid
     assert (data / name).stat().st_mode & 0o777 == 0o600
 print('Chinese credential name and credential persistence after container recreation passed')
 PY
+
+python3 tests/oauth-container-probe.py resume "$smoke_dir/oauth-checkpoint.json"

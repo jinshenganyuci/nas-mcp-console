@@ -4,6 +4,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import re
 import secrets
 import time
 from collections import defaultdict, deque
@@ -24,6 +25,7 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 
 from .oauth import build_oauth
+from .oauth_server import BuiltinOAuth
 from .store import Store
 from .validation import validate_credential
 
@@ -31,14 +33,22 @@ STATIC = Path(__file__).parent / "static"
 MAX_BODY = 128 * 1024
 COOKIE = "nas_mcp_admin"
 SESSION_TTL = 12 * 3600
+OAUTH_BROWSER_COOKIE = "nas_mcp_oauth_browser"
+OAUTH_PROTOCOL_PATHS = frozenset({
+    "/authorize", "/token", "/register", "/revoke",
+    "/.well-known/oauth-authorization-server",
+    "/.well-known/oauth-protected-resource",
+    "/.well-known/oauth-protected-resource/mcp",
+})
 ACCESS = ContextVar("credential_access", default=None)
 
 
 class Gate:
     """Check hosts, browser origins, body size and local MCP bearer credentials."""
-    def __init__(self, app, store: Store, authenticate, oauth_config=None):
+    def __init__(self, app, store: Store, authenticate, oauth_config=None, builtin_oauth=None):
         self.app, self.store = app, store
         self.authenticate, self.oauth_config = authenticate, oauth_config
+        self.builtin_oauth = builtin_oauth
 
     def trusted_host(self, authority: str) -> bool:
         try:
@@ -69,15 +79,16 @@ class Gate:
         host = headers.get(b"host", b"").decode("latin-1")
         if not self.trusted_host(host):
             return await JSONResponse({"error": "此访问域名尚未加入允许列表，请先通过 NAS 内网 IP 配置。"}, 421)(scope, receive, send)
+        path = scope.get("path", "")
+        protocol_request = bool(self.builtin_oauth and self.builtin_oauth.enabled and path in OAUTH_PROTOCOL_PATHS)
         origin = headers.get(b"origin", b"").decode("latin-1")
-        if origin:
+        if origin and not protocol_request:
             public = self.store.settings().get("public_url", "")
             valid = {f"http://{host}", f"https://{host}"}
             if public:
                 valid.add(public.rstrip("/"))
             if origin not in valid:
                 return await JSONResponse({"error": "不接受跨站请求。"}, 403)(scope, receive, send)
-        path = scope.get("path", "")
         identity = None
         if path == "/mcp":
             value = headers.get(b"authorization", b"").decode("latin-1")
@@ -90,8 +101,10 @@ class Gate:
                     parts = urlsplit(url)
                     metadata = f"{parts.scheme}://{parts.netloc}/.well-known/oauth-protected-resource{parts.path}"
                     challenge += ', resource_metadata="' + metadata + '"'
+                elif self.builtin_oauth and self.builtin_oauth.enabled:
+                    challenge += ', resource_metadata="' + self.builtin_oauth.metadata_url + '"'
                 return await JSONResponse({"error": "需要有效的 MCP 客户端凭证。"}, 401,
-                    headers={"WWW-Authenticate": challenge})(scope, receive, send)
+                    headers={"WWW-Authenticate": challenge, "Cache-Control": "no-store"})(scope, receive, send)
         # This stateless service does not send server-initiated events.
         if path == "/mcp" and scope["method"] in ("GET", "DELETE"):
             return await Response(status_code=405, headers={"Allow": "POST"})(scope, receive, send)
@@ -135,6 +148,10 @@ def create_app(data_dir: Path | None = None):
     attempts = defaultdict(deque)
     validation_limiter = anyio.CapacityLimiter(4)
     oauth_config = store.settings().get("oauth")
+    builtin = BuiltinOAuth(store)
+    # Synchronize persisted OAuth grants even when the built-in server is disabled.
+    builtin.enabled
+    oauth_bindings: dict[str, dict] = {}
     auth_args = {}
     external, auth = build_oauth(oauth_config) if oauth_config else (None, None)
 
@@ -142,6 +159,10 @@ def create_app(data_dir: Path | None = None):
         identity = await anyio.to_thread.run_sync(store.client_for_token, token)
         if identity:
             return {**identity, "scopes": auth.required_scopes if auth else []}
+        if builtin and builtin.enabled:
+            identity = await builtin.authenticate(token)
+            if identity:
+                return identity
         if external:
             access = await external.verify_token(token)
             if access and set(auth.required_scopes or []).issubset(access.scopes):
@@ -157,7 +178,7 @@ def create_app(data_dir: Path | None = None):
                 return None
         auth_args = {"token_verifier": CombinedVerifier(), "auth": auth}
 
-    mcp = MCPServer("私人凭据库", version="0.2.1", instructions=(
+    mcp = MCPServer("私人凭据库", version="0.3.0", instructions=(
         "这是用户的长期凭据库。先用list_credentials查找用户需要的服务，再用get_credentials取所需字段。"
         "get_credentials会返回真实密码、密钥或Token，供当前客户端完成用户请求；不要在普通答复中回显这些值。"
         "本服务只存储和提供凭据，不执行SSH命令、管理GitHub、操作Cloudflare或推送镜像。"
@@ -222,6 +243,44 @@ def create_app(data_dir: Path | None = None):
         response.set_cookie(COOKIE, sid, max_age=SESSION_TTL, httponly=True, samesite="strict", secure=secure, path="/")
         return response
 
+    def oauth_request_info(request: Request, request_id: str):
+        if not builtin or not builtin.enabled:
+            raise ValueError("请先设置公网 HTTPS 对外连接地址，再从客户端重新发起授权。")
+        info = builtin.pending_info(request_id)
+        binding = oauth_bindings.get(request_id)
+        browser = request.cookies.get(OAUTH_BROWSER_COOKIE, "")
+        if not binding or binding["expires"] <= time.monotonic() or not secrets.compare_digest(browser, binding["browser"]):
+            raise ValueError("授权页面已过期或不属于当前浏览器，请从客户端重新发起连接。")
+        return info
+
+    async def oauth_consent(request: Request):
+        if not builtin or not builtin.enabled:
+            return JSONResponse({"error": "请先通过内网后台设置公网 HTTPS 对外连接地址。"}, 400)
+        if not builtin._allowed_host(request):
+            return JSONResponse({"error": "请使用已配置的公网 HTTPS 地址完成授权。"}, 421)
+        request_id = request.query_params.get("request", "")
+        try:
+            await anyio.to_thread.run_sync(builtin.pending_info, request_id)
+        except ValueError:
+            return JSONResponse({"error": "授权请求无效或已过期，请从客户端重新发起连接。"}, 400)
+        now = time.monotonic()
+        for key in list(oauth_bindings):
+            if oauth_bindings[key]["expires"] <= now:
+                oauth_bindings.pop(key, None)
+        browser = request.cookies.get(OAUTH_BROWSER_COOKIE, "")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{43}", browser):
+            browser = secrets.token_urlsafe(32)
+        previous = oauth_bindings.get(request_id)
+        if previous and not secrets.compare_digest(previous["browser"], browser):
+            return JSONResponse({"error": "此授权请求已绑定其他浏览器，请从客户端重新发起连接。"}, 409)
+        if not previous and len(oauth_bindings) >= 128:
+            return JSONResponse({"error": "待处理授权过多，请稍后重试。"}, 429)
+        oauth_bindings[request_id] = previous or {"browser": browser, "expires": now + 600}
+        response = FileResponse(STATIC / "oauth.html")
+        response.set_cookie(OAUTH_BROWSER_COOKIE, browser, max_age=600, httponly=True,
+                            secure=True, samesite="lax", path="/")
+        return response
+
     async def api(request: Request):
         operation = request.path_params.get("operation", "")
         method = request.method
@@ -232,6 +291,18 @@ def create_app(data_dir: Path | None = None):
         except (ValueError, json.JSONDecodeError):
             return JSONResponse({"error": "请求格式无效。"}, 400)
         item = session(request)
+        if operation == "oauth/request" and method == "GET":
+            try:
+                info = await anyio.to_thread.run_sync(oauth_request_info, request, request.query_params.get("request", ""))
+            except ValueError:
+                return JSONResponse({"error": "授权请求无效或已过期，请从客户端重新发起连接。"}, 400)
+            body = {"request_id": info["request_id"],
+                    "client": {"name": info["client_name"], "id": info["client_id"], "redirect_uri": info["redirect_uri"]},
+                    **session_body(item)}
+            if item and not store.must_change_password:
+                body["services"] = [{"id": row["id"], "kind": row["kind"], "alias": row["alias"], "description": row["description"]}
+                                    for row in store.metadata(["*"])]
+            return JSONResponse(body)
         if operation == "session" and method == "GET":
             return JSONResponse(session_body(item))
         if operation == "login" and method == "POST":
@@ -265,6 +336,30 @@ def create_app(data_dir: Path | None = None):
         if store.must_change_password:
             return JSONResponse({"error": "请先修改首次登录密码。"}, 403)
         try:
+            if operation == "oauth/decision" and method == "POST":
+                request_id = data.get("request_id", "")
+                await anyio.to_thread.run_sync(oauth_request_info, request, request_id)
+                approve = data.get("approve")
+                if not isinstance(approve, bool):
+                    raise ValueError("请选择同意或取消授权。")
+                allowed = None
+                if approve:
+                    allowed = Store._allowed_services(data.get("allowed_services", []))
+                    existing = {row["id"] for row in store.metadata(["*"])}
+                    if not allowed or (allowed != ["*"] and ("*" in allowed or not set(allowed).issubset(existing))):
+                        raise ValueError("请选择当前存在的凭据，或明确允许全部凭据。")
+                redirect = await anyio.to_thread.run_sync(builtin.complete, request_id, allowed)
+                oauth_bindings.pop(request_id, None)
+                return JSONResponse({"redirect_url": redirect})
+            if operation == "oauth/grants" and method == "GET":
+                grants = await anyio.to_thread.run_sync(builtin.list_grants) if builtin and builtin.enabled else []
+                return JSONResponse({"grants": grants})
+            if operation.startswith("oauth/grants/") and method == "DELETE":
+                if not builtin or not builtin.enabled:
+                    raise ValueError("内置 OAuth 未启用。")
+                identifier = operation.removeprefix("oauth/grants/")
+                await anyio.to_thread.run_sync(builtin.revoke_grant, identifier)
+                return JSONResponse({"ok": True})
             if operation == "services":
                 if method == "GET":
                     return JSONResponse({"services": store.services()})
@@ -301,6 +396,8 @@ def create_app(data_dir: Path | None = None):
                     return JSONResponse(store.settings())
                 if method == "PUT":
                     store.save_settings(data)
+                    # Disabling OAuth or changing its origin permanently invalidates old grants.
+                    builtin.enabled
                     return JSONResponse({"restart_required": True})
         except (ValueError, TypeError, KeyError) as exc:
             return JSONResponse({"error": str(exc)}, 400)
@@ -308,7 +405,7 @@ def create_app(data_dir: Path | None = None):
 
     async def static(request):
         filename = request.path_params.get("asset", "index.html")
-        if filename not in ("index.html", "admin.js", "style.css"):
+        if filename not in ("index.html", "admin.js", "style.css", "oauth.html", "oauth.js", "oauth.css"):
             return Response(status_code=404)
         return FileResponse(STATIC / filename)
 
@@ -322,10 +419,12 @@ def create_app(data_dir: Path | None = None):
 
     web = Starlette(routes=[Route("/", static), Route("/admin", static),
         Route("/static/{asset}", static), Route("/healthz", health),
+        Route("/oauth/consent", oauth_consent),
         Route("/api/{operation:path}", api, methods=["GET", "POST", "PUT", "DELETE"]),
+        *(builtin.routes() if not oauth_config else []),
         Mount("/", app=mcp_app)], lifespan=lifespan)
-    web.state.store, web.state.mcp = store, mcp
-    return Gate(web, store, authenticate, oauth_config)
+    web.state.store, web.state.mcp, web.state.builtin_oauth = store, mcp, builtin
+    return Gate(web, store, authenticate, oauth_config, builtin)
 
 
 def app_factory():

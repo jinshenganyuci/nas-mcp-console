@@ -2,12 +2,12 @@
 
 把 SSH 信息、账号密码、API 密钥和 Token 长期保存在自己的 NAS，在新对话和其他设备上通过 MCP 按授权获取，省去反复手动粘贴。
 
-提供中文可视化后台。飞牛部署配置默认拉取 `docker.io/jinshenganyuci/nas-mcp-console:0.2.1`，无需在 NAS 上构建镜像。
+提供中文可视化后台。飞牛部署配置默认拉取 `docker.io/jinshenganyuci/nas-mcp-console:0.3.0`，无需在 NAS 上构建镜像。
 
-**0.2.1 支持中文凭据名称，兼容已有英文名称与客户端授权。镜像提供 `linux/amd64`、`linux/arm64` 两种架构。**
+**0.3.0 新增内置 OAuth 登录授权，可从支持 OAuth 的自定义 MCP 页面连接。保留中文凭据名称及已有客户端 Token。镜像提供 `linux/amd64`、`linux/arm64` 两种架构。**
 
-- Docker Hub：`docker.io/jinshenganyuci/nas-mcp-console:0.2.1`
-- GHCR：`ghcr.io/jinshenganyuci/nas-mcp-console:0.2.1`
+- Docker Hub：`docker.io/jinshenganyuci/nas-mcp-console:0.3.0`
+- GHCR：`ghcr.io/jinshenganyuci/nas-mcp-console:0.3.0`
 - 两个仓库也提供 `latest` 标签；部署配置默认固定版本，方便控制升级。
 
 ## 功能
@@ -15,7 +15,8 @@
 - 可视化新增、编辑、删除凭据。凭据名称支持中文，例如 `家里NAS`、`香港服务器`；秘密字段留空表示保留旧值。
 - 支持 SSH root/其他账号＋密码、SSH 私钥及口令、Cloudflare API Token/Global API Key、Alist 账号密码、GitHub Token、Docker Hub/GHCR Token。
 - 后台提供“测试凭据”，确认录入的认证信息能否使用。
-- 每个客户端独立生成访问 Token，可授权全部凭据或指定条目，支持撤销。
+- 支持内置 OAuth：在本库登录、选择凭据范围并同意，后台可查看并撤销授权。
+- 也可为每个客户端独立生成访问 Token，授权全部凭据或指定条目。
 - 凭据加密持久化，重启服务或容器后仍可使用。
 - MCP只暴露 `list_credentials` 和 `get_credentials` 两个只读工具。
 
@@ -24,8 +25,8 @@
 ## 使用流程
 
 1. 在后台录入一次凭据名称、连接信息和秘密值，例如 SSH 条目 `家里NAS`。
-2. 给某台电脑或 AI 客户端创建访问 Token，选择允许读取哪些凭据。
-3. 将 MCP 地址与客户端 Token 保存到支持的客户端。
+2. 在客户端添加 MCP 地址，使用 OAuth 登录并选择允许读取哪些凭据；也可在后台创建独立客户端 Token。
+3. 保存客户端连接，后续对话复用此授权。
 4. 新对话里直接说明任务。AI先查找凭据，再获取所需字段，由当前客户端环境决定如何使用。
 
 “凭据名称”是你和 AI 查找这份账号或密钥时使用的名字，不是登录用户名；“备注”是可选的用途说明。名称为 1～64 个字，支持中文、英文、数字以及短横线、下划线，以文字或数字开头，不含空格。名称保存后固定，编辑时可修改备注及连接信息；已有英文名称不变，原客户端授权继续有效。
@@ -77,13 +78,13 @@ docker compose -f compose.fnos.yaml up -d
 
 | 配置项 | 默认值 | 用途 |
 | --- | --- | --- |
-| `image` | `docker.io/jinshenganyuci/nas-mcp-console:0.2.1` | 镜像地址及版本 |
+| `image` | `docker.io/jinshenganyuci/nas-mcp-console:0.3.0` | 镜像地址及版本 |
 | `ports` | `8090:8090` | 冒号左边是 NAS 端口；更换入口端口时只改左边 |
 | `user` | `1000:1000` | 与 `./data` 所有者匹配的 UID/GID |
 | `volumes` | `./data:/data` | 项目目录下的持久化数据；已有数据后保持挂载位置不变 |
 | `NAS_MCP_ALLOWED_HOSTS` | 空字符串 | 额外允许的域名，以逗号分隔；也可在后台设置 |
 
-Docker Hub 与 GHCR 镜像均为公开，无需配置镜像仓库登录即可拉取。若当前网络访问 Docker Hub 不便，可将 `image` 改为备用地址 `ghcr.io/jinshenganyuci/nas-mcp-console:0.2.1`。
+Docker Hub 与 GHCR 镜像均为公开，无需配置镜像仓库登录即可拉取。若当前网络访问 Docker Hub 不便，可将 `image` 改为备用地址 `ghcr.io/jinshenganyuci/nas-mcp-console:0.3.0`。
 
 ## 录入与可用性测试
 
@@ -112,24 +113,35 @@ bearer_token_env_var = "NAS_MCP_TOKEN"
 环境变量必须对客户端进程可见；图形客户端不一定继承终端的export，也可用客户端提供的凭据设置或钥匙串助手。
 每台新设备需添加一次MCP连接，之后在启用该连接的新对话中复用，不必分别登录每个平台。
 
-ChatGPT网页端还需要账户支持的插件/MCP连接方式与兼容认证。
-本项目可选外部OAuth资源服务器支持：配置发行者、JWKS、audience、允许的用户subject和required scopes，保存后重启。
-登录、同意授权、PKCE和客户端注册由外部身份提供方负责；本项目不包含OAuth登录站点。
-白名单中的OAuth用户视为库所有者，可读取全库；需要条目隔离时使用独立客户端Token。
-尚未完成真实ChatGPT网页账号与身份提供方的联调。
+### 通过 OAuth 页面直接添加
+
+1. 在凭据库后台“设置访问入口”填写 **对外连接地址**，例如 `https://vault.example:8794`，不要带 `/mcp`。反向代理应已提供有效 HTTPS。未配置外部身份提供方时会自动使用内置 OAuth。
+2. 在 ChatGPT / Codex 支持的“添加自定义 MCP 服务器”页面填写名称，服务器 URL 为 `https://vault.example:8794/mcp`，身份验证选择 **OAuth**。
+3. 保留 OAuth 自动发现和动态客户端注册，无需手填 Client ID、Client Secret、Issuer 或 JWKS。
+4. 在跳出的**私人凭据库页面**输入本库管理密码，核对客户端和回调域名，勾选允许读取的凭据，再点击“同意并继续”。也可明确选择“全部凭据”，这会包括今后新增的条目。
+5. 回到客户端完成添加。后台“客户端授权 → 网页登录授权（OAuth）”可以查看范围、有效期和最近使用时间，也可立即撤销。
+
+初始密码尚未修改时，先到管理后台完成首次设置。每次新授权都需要明确同意，不会因已登录后台而自动授权全库。管理密码只提交到本库；客户端拿到专属 OAuth 令牌，不会拿到管理密码。
+
+授权有效期为 **30 天**；访问令牌为 15 分钟，支持刷新的客户端可在这 30 天内自动续期，无需每次聊天重新登录。超过授权有效期、管理员撤销或更改对外连接地址后需要重新连接。授权码只能使用一次，刷新令牌每次使用后轮换；重复使用旧刷新令牌会撤销该次授权。未完成的授权页面有效期为 10 分钟，服务重启后需重新发起；已完成的授权可以跨容器重建继续使用。
+
+提供 OAuth 发现、动态客户端注册（DCR）、Authorization Code + PKCE S256、资源绑定、刷新与撤销端点。内置 OAuth 与手动客户端 Token 可同时使用。能否在具体账号上添加，还取决于该客户端开放的功能；自动化测试覆盖协议与本服务流程，真实账号连接需要部署后完成。
+
+已有外部身份提供方的用户，可在高级设置中保留发行者、JWKS、audience、允许的 subject 和 required scopes，保存后重启。启用外部 OAuth 会取代内置登录流程；外部白名单身份仍视为库所有者，可读取全库。需要条目隔离时使用内置 OAuth 或独立客户端 Token。
 
 ## 内外网访问
 
 公网访问需反向代理提供HTTPS，并在后台设置域名；内网基础地址可留空，自动使用当前地址。
-正式使用建议采用HTTPS，避免明文传输凭据。代理需保留Host、不缓存API响应，并转发/mcp及OAuth所需/.well-known路径。
-可以在代理上把管理后台限制到内网，仅向外开放MCP和所需发现路径。
+正式使用采用 HTTPS。最简单的方式是将整个独立域名反向代理到本服务，保留 Host（含端口）、查询参数和请求正文，不缓存响应。应用在私有代理链路接收 HTTP，浏览器仍应访问公网 HTTPS 地址。
+
+如需在代理上限制后台，请同时放行 OAuth 所需的 `/authorize`、`/token`、`/register`、`/revoke`、`/.well-known/*`、`/oauth/consent`、`/api/login`、`/api/oauth/request`、`/api/oauth/decision` 和授权页 `/static/*`，以及 `/mcp`。只放行 MCP 和发现路径无法完成网页登录授权。
 
 ## 保存与备份
 
 容器的数据都保存在 `/data`，对应 Compose 项目目录下的 `./data`。重启、更新镜像、重建或删除容器都不会自动删除这个 NAS 目录。不要删除或清空 `data`；移动 Compose 文件或修改挂载位置时，应同时迁移原有完整数据，否则新位置会初始化为空库。
 
 秘密值以Fernet加密保存在 `/data/vault.json`，主密钥在 `/data/master.key`，账号配置与客户端授权在 `/data/state.json`；取用或后台验证时才解密到内存。
-客户端Token仅保存散列，管理员密码使用scrypt派生散列。
+客户端 Token 仅保存散列，管理员密码使用 scrypt 派生散列。内置 OAuth 状态持久化到 `/data/oauth.json`：授权码和访问/刷新令牌仅存散列，动态客户端密钥使用同一主密钥加密；文件权限为 600。该文件也必须包含在完整备份中。当前服务使用单进程，不支持多个实例同时写入同一数据目录。
 
 备份前停止此服务，复制**整个 `data` 目录**，随后启动服务。恢复时先停服务，把同一份备份的全部文件恢复到挂载的 `data` 目录，确保目录和文件的所有者仍与 Compose 的 `user` 一致，再启动。不能只备份 `vault.json`：缺少配套的 `master.key` 就无法解密，缺少 `state.json` 也无法完整恢复条目与授权。
 
@@ -145,9 +157,9 @@ docker compose -f compose.fnos.yaml up -d
 docker compose -f compose.fnos.yaml ps
 ```
 
-确认容器健康后访问后台，原凭据和客户端授权仍应存在。版本标签固定为 `0.2.1` 时，上述命令不会自动改成未来的新版本。需要回退时使用原版本镜像；若新版本改变了数据格式，应同时恢复升级前的完整备份。
+确认容器健康后访问后台，原凭据和客户端授权仍应存在。版本标签固定为 `0.3.0` 时，上述命令不会自动改成未来的新版本。需要回退时使用原版本镜像；若新版本改变了数据格式，应同时恢复升级前的完整备份。
 
-`0.2.0` 不支持中文名称；在 `0.2.1` 创建中文名称后，如需回退到 `0.2.0`，请同时恢复升级前的完整备份。
+`0.2.0` 不支持中文名称；在 `0.2.1` 或更高版本创建中文名称后，如需回退到 `0.2.0`，请同时恢复升级前的完整备份。
 
 ## 从旧命名卷切换
 
@@ -176,6 +188,6 @@ NAS_MCP_DATA=./data .venv/bin/uvicorn app.server:app_factory --factory --host 12
 .venv/bin/python -m pytest -q
 ```
 
-测试使用临时或虚构凭据及 mock 网络，不连接真实账号。普通 push/PR 的 GitHub Actions 运行测试、JS 语法和 Compose 配置检查。版本 tag 或手动触发的发布流程先运行 186 项测试，再验证真实容器启动及重建后的数据持久化，通过后构建 `linux/amd64` 与 `linux/arm64` 双架构镜像，并上传 Docker Hub 和 GHCR。
+测试使用临时或虚构凭据及 mock 网络，不连接真实账号。普通 push/PR 的 GitHub Actions 运行测试、JS 语法和 Compose 配置检查。版本 tag 或手动触发的发布流程先运行完整测试，再验证真实容器启动、OAuth 登录授权及重建后的凭据与刷新令牌持久化，通过后构建 `linux/amd64` 与 `linux/arm64` 双架构镜像，并上传 Docker Hub 和 GHCR。
 
-参考：[MCP Python SDK](https://py.sdk.modelcontextprotocol.io/)、[桌面与网页MCP](https://learn.chatgpt.com/docs/extend/mcp)、[Cloudflare凭据](https://developers.cloudflare.com/fundamentals/api/get-started/)、[Docker访问Token](https://docs.docker.com/security/access-tokens/)。
+参考：[MCP Python SDK](https://py.sdk.modelcontextprotocol.io/)、[桌面与网页MCP](https://learn.chatgpt.com/docs/extend/mcp)、[OpenAI 插件 OAuth](https://developers.openai.com/plugins/build/auth)、[Cloudflare凭据](https://developers.cloudflare.com/fundamentals/api/get-started/)、[Docker访问Token](https://docs.docker.com/security/access-tokens/)。
