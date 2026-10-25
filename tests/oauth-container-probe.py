@@ -56,6 +56,9 @@ def verify_access(token):
     assert not result.get('isError')
     content = result.get('structuredContent') or json.loads(result['content'][0]['text'])
     assert content['credentials']['password'] == 'synthetic-container-credential'
+    assert content['connection']['host'] == '192.0.2.10'
+    assert content['connection']['external_host'] == 'ssh.example.com'
+    assert content['connection']['external_port'] == 2222
 
 
 if mode == 'start':

@@ -171,6 +171,11 @@
     return node('div', { class: 'meta-row' }, node('span', {}, label), node('strong', {}, value || '未设置'));
   }
 
+  function sshAddress(host, port) {
+    if (!host) return '未设置';
+    return `${host.includes(':') ? `[${host}]` : host}:${port || 22}`;
+  }
+
   function renderServices() {
     content.append(pageHeading('账号与密钥，一处保存', '按名称管理凭据，授权你的客户端在需要时通过 MCP 读取。', button('＋ 添加凭据', () => serviceDialog(), 'primary')));
     content.append(node('div', { class: 'quick-add-services', 'aria-label': '按类型添加凭据' },
@@ -208,7 +213,9 @@
         } else details.append(meta('凭据类型', 'API Token'), meta('Token', creds.token ? '已保存' : '未填写'));
       } else if (service.kind === 'ssh') {
         const authMethod = cfg.auth_method || (creds.private_key ? 'key' : 'password');
-        details.append(meta('服务器', `${cfg.host || '未设置'}:${cfg.port || 22}`), meta('用户名', cfg.username), meta('凭据类型', authMethod === 'key' ? 'SSH 私钥' : '账号密码'), meta(authMethod === 'key' ? '私钥' : '密码', (authMethod === 'key' ? creds.private_key : creds.password) ? '已保存' : '未填写'));
+        details.append(meta('内网（默认）', sshAddress(cfg.host, cfg.port)));
+        if (cfg.external_host) details.append(meta('外网', sshAddress(cfg.external_host, cfg.external_port)));
+        details.append(meta('用户名', cfg.username), meta('凭据类型', authMethod === 'key' ? 'SSH 私钥' : '账号密码'), meta(authMethod === 'key' ? '私钥' : '密码', (authMethod === 'key' ? creds.private_key : creds.password) ? '已保存' : '未填写'));
       } else if (service.kind === 'alist') {
         details.append(meta('服务地址', cfg.url), meta('用户名', cfg.username), meta('登录密码', creds.password ? '已保存' : '未填写'));
       } else if (service.kind === 'github') {
@@ -219,13 +226,13 @@
       grid.append(node('article', { class: 'service-card' },
         node('div', { class: 'service-head' }, node('span', { class: `service-icon ${service.kind}`, 'aria-hidden': 'true' }, icon), node('div', { class: 'service-title' }, node('h3', {}, service.alias), node('span', { class: 'service-alias' }, title)), node('span', { class: `badge ${hasSecret ? 'success' : 'neutral'}` }, hasSecret ? '已保存凭据' : '仅基本信息')),
         node('p', { class: 'service-description' }, service.description || '私人凭据条目'), details,
-        node('div', { class: 'service-foot' }, node('div', { class: 'credential-status' }, node('span', { class: 'credential-note' }, `${service.kind}/${service.alias}`), node('span', { class: `verification-note ${verification?.ok ? 'success' : verification ? 'pending' : ''}`, title: verification?.message || '' }, validationText)), node('div', { class: 'card-actions' }, button('测试凭据', event => {
+        node('div', { class: 'service-foot' }, node('div', { class: 'credential-status' }, node('span', { class: 'credential-note' }, `${service.kind}/${service.alias}`), node('span', { class: `verification-note ${verification?.ok ? 'success' : verification ? 'pending' : ''}`, title: verification?.message || '' }, validationText)), node('div', { class: 'card-actions' }, button(service.kind === 'ssh' ? '测试内网' : '测试凭据', event => {
           if (demo) return demoNotice();
           busy(event.currentTarget, () => testCredential(service));
         }, 'secondary small'), button('编辑', () => serviceDialog(service), 'ghost small'), button('删除', () => deleteService(service), 'ghost danger small'))),
       ));
     }
-    content.append(grid, node('p', { class: 'hint validation-hint' }, '后台「测试凭据」仅验证认证是否可用，不保证所有业务权限。MCP 仅提供凭据列表和读取。'), node('div', { class: 'notice info connection-tip' }, node('strong', {}, '按客户端设置读取范围'), node('span', {}, '可授权全部凭据，也可以只授权指定的条目。'), button('管理授权 →', () => setView('clients'), 'ghost small')));
+    content.append(grid, node('p', { class: 'hint validation-hint' }, '后台测试仅验证认证是否可用，不保证所有业务权限。SSH 仅测试内网地址；外网地址用于客户端按需连接。MCP 仅提供凭据列表和读取。'), node('div', { class: 'notice info connection-tip' }, node('strong', {}, '按客户端设置读取范围'), node('span', {}, '可授权全部凭据，也可以只授权指定的条目。'), button('管理授权 →', () => setView('clients'), 'ghost small')));
   }
 
   async function testCredential(service, body = {}) {
@@ -244,7 +251,7 @@
       }, 'primary');
       openModal('核对 SSH 主机指纹', node('div', {},
         node('p', {}, result.message || '首次验证这台服务器，需要先核对其 SSH 主机指纹。'),
-        meta('服务器', `${service.config?.host || service.alias}:${service.config?.port || 22}`),
+        meta('内网服务器', sshAddress(service.config?.host || service.alias, service.config?.port)),
         meta('公钥类型', result.key_type || 'SSH'),
         node('pre', { class: 'code-block fingerprint-value' }, fingerprint),
         node('p', { class: 'hint' }, '请通过 NAS 本机控制台或其他可信渠道核对以上指纹。确认一致后，点击按钮保存信任并继续验证登录凭据。'),
@@ -325,12 +332,29 @@
         syncMethod();
         dynamic.append(field('保存哪种凭据', controls.auth_method), tokenFields, globalFields);
       } else if (type.value === 'ssh') {
-        controls.host = textInput('host', cfg.host || '', { required: true, placeholder: '192.168.1.10 或服务器域名' });
+        controls.host = textInput('host', cfg.host || '', { required: true, placeholder: '192.168.1.10 或内网域名' });
         controls.port = textInput('port', cfg.port || 22, { type: 'number', min: 1, max: 65535, required: true });
+        controls.external_host = textInput('external_host', cfg.external_host || '', { placeholder: '例如 ssh.example.com，留空不配置' });
+        controls.external_port = textInput('external_port', cfg.external_port || 22, { type: 'number', min: 1, max: 65535 });
+        const syncExternal = () => {
+          const configured = Boolean(controls.external_host.value.trim());
+          controls.external_port.disabled = !configured;
+          controls.external_port.required = configured;
+        };
+        controls.external_host.addEventListener('input', syncExternal);
+        syncExternal();
         controls.username = textInput('username', cfg.username || 'root', { required: true, autocomplete: 'off', placeholder: '例如 root' });
         controls.auth_method = node('select', { name: 'auth_method' }, node('option', { value: 'password' }, '账号密码'), node('option', { value: 'key' }, 'SSH 私钥'));
         controls.auth_method.value = cfg.auth_method || (creds.private_key ? 'key' : 'password');
-        dynamic.append(node('div', { class: 'field-grid' }, field('服务器地址', controls.host), field('SSH 端口', controls.port), field('用户名', controls.username), field('凭据方式', controls.auth_method)));
+        dynamic.append(
+          node('div', { class: 'field-grid' }, field('内网地址（默认）', controls.host), field('内网 SSH 端口', controls.port)),
+          node('fieldset', { class: 'ssh-external-settings' },
+            node('legend', {}, '外网连接（选填）'),
+            node('div', { class: 'field-grid' }, field('外网域名或 IP', controls.external_host), field('外网 SSH 端口', controls.external_port)),
+            node('p', { class: 'hint' }, '默认使用内网。需要外网连接时再填写映射后的地址和端口；共用下方的账号与密码或私钥。地址只填域名或 IP，不带协议或端口。'),
+          ),
+          node('div', { class: 'field-grid' }, field('用户名', controls.username), field('凭据方式', controls.auth_method)),
+        );
         const keyFields = node('div', {}, secretInput('SSH 私钥', 'private_key', creds.private_key, true), secretInput('私钥口令（可选）', 'key_passphrase', creds.key_passphrase));
         const passwordFields = secretInput('SSH 登录密码', 'password', creds.password);
         const syncAuth = () => { keyFields.hidden = controls.auth_method.value !== 'key'; passwordFields.hidden = controls.auth_method.value !== 'password'; };
@@ -370,7 +394,8 @@
           const secrets = {};
           for (const [name, control] of Object.entries(controls)) {
             if (name === 'email' && controls.auth_method.value !== 'global_key') continue;
-            config[name] = name === 'port' ? Number(control.value) : control.value.trim();
+            if (name === 'external_port' && !controls.external_host.value.trim()) continue;
+            config[name] = ['port', 'external_port'].includes(name) ? Number(control.value) : control.value.trim();
           }
           let allowedSecrets;
           if (type.value === 'cloudflare') allowedSecrets = config.auth_method === 'global_key' ? ['global_api_key'] : ['token'];
@@ -651,7 +676,7 @@
     ];
     state.services = [
       { kind: 'cloudflare', alias: 'personal-cloud', description: '个人 Cloudflare 账号总控制密钥', config: { auth_method: 'global_key', email: 'example-user@example.com' }, credentials: { global_api_key: true } },
-      { kind: 'ssh', alias: 'home-nas', description: '家里的飞牛 NAS · root 账号密码', config: { host: '192.0.2.10', port: 22, username: 'root', auth_method: 'password' }, credentials: { password: true } },
+      { kind: 'ssh', alias: 'home-nas', description: '家里的飞牛 NAS · root 账号密码', config: { host: '192.0.2.10', port: 22, external_host: 'ssh.example.com', external_port: 2222, username: 'root', auth_method: 'password' }, credentials: { password: true } },
       { kind: 'alist', alias: 'family-files', description: '家庭 Alist 账号密码', config: { url: 'https://alist.example.com', username: 'example-user' }, credentials: { password: true } },
       { kind: 'github', alias: 'personal-github', description: '个人 GitHub 账号与 PAT', config: { owner: 'example-user' }, credentials: { token: true } },
       { kind: 'docker', alias: 'dockerhub-images', description: 'Docker Hub 登录凭据', config: { registry: 'docker.io', username: 'example-user', namespace: 'example-user' }, credentials: { token: true } },

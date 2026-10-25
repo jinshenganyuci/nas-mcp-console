@@ -244,6 +244,17 @@ def test_first_ssh_contact_requests_trust_before_sending_credentials(ssh_peer, h
     sock.close.assert_called_once()
 
 
+def test_external_ssh_endpoint_does_not_change_admin_test_target_or_trust(ssh_peer, host_key):
+    transport, _, connect, _ = ssh_peer
+    value = ssh_record(port=2222)
+    value["connection"].update(external_host="ssh.example.com", external_port=45678)
+    result = validate_credential(value, fingerprint(host_key))
+    assert result["ok"]
+    connect.assert_called_once_with(("nas.internal", 2222), timeout=8.0)
+    assert result["verified_known_hosts"] == f"[nas.internal]:2222 ssh-rsa {host_key.get_base64()}\n"
+    transport.auth_password.assert_called_once_with("root", SECRET, fallback=False)
+
+
 def test_wrong_confirmation_fingerprint_does_not_send_authentication(ssh_peer):
     transport, *_ = ssh_peer
     result = validate_credential(ssh_record(), "SHA256:wrong")

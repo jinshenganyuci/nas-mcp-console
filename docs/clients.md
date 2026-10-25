@@ -233,8 +233,10 @@ hermes mcp test private_credentials
       "alias": "家里NAS",
       "description": "家庭存储服务器",
       "connection": {
-        "host": "ssh.example.com",
+        "host": "192.168.1.20",
         "port": 22,
+        "external_host": "ssh.example.com",
+        "external_port": 2222,
         "username": "root",
         "auth_method": "password"
       },
@@ -261,6 +263,10 @@ hermes mcp test private_credentials
 
 返回包含条目元数据、`connection` 和所选字段的 `credentials`。省略 `fields` 会返回该条目的全部已保存秘密字段；请求未保存或不属于该条目的字段会失败。
 
+从 0.4.0 起，SSH 可以同时返回内外网地址。`connection.host` / `port` 始终是默认内网入口；可选的 `external_host` / `external_port` 仅在配置外网后出现。默认使用内网，用户指定外网时使用外网字段，两组地址共用同一份密码或私钥，不自动尝试切换。地址属于 `connection`，不是 `fields` 中的秘密字段。
+
+`known_hosts` 是当前已确认的内网主机记录。首次使用外网入口时仍需核对目标身份，不应直接改写已保存记录中的主机名来跳过验证。
+
 此时真实密码、密钥或 Token 会进入调用客户端的工具上下文。服务端加密存储不等于秘密永远不会被模型看到，客户端之后如何记录、展示和使用这些值由客户端控制。只向可信客户端授权需要的条目。
 
 ## 让新对话继续使用
@@ -272,6 +278,8 @@ hermes mcp test private_credentials
 可直接使用的提示：
 
 > 通过凭据库找到“家里NAS”的 SSH 信息，确认主机身份后登录，查看系统运行时间，不要显示密码。
+
+> 我在外网，请使用“家里NAS”的 external_host 和 external_port 连接，核对主机身份，共用已保存的 SSH 登录凭据。
 
 > 从凭据库读取 GitHub 授权，列出我能访问的仓库，不要显示 Token。
 

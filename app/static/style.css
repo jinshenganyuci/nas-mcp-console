@@ -180,6 +180,10 @@ input[type="checkbox"], input[type="radio"] { flex: 0 0 auto; width: 16px; heigh
 .hint { margin: 0; color: #8692a5; font-size: 12px; line-height: 1.6; }
 .field-error { margin: 0; color: var(--danger); font-size: 12px; }
 .field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 20px; }
+.ssh-external-settings { min-width: 0; margin: 0 0 22px; padding: 14px 16px 16px; border: 1px solid var(--border); border-radius: 12px; }
+.ssh-external-settings legend { padding: 0 6px; color: #526580; font-size: 13px; font-weight: 600; }
+.ssh-external-settings .field { margin-bottom: 12px; }
+.ssh-external-settings > .hint { margin: 0; }
 .check-line { display: flex; align-items: flex-start; gap: 9px; margin: 10px 0 19px; color: #5e6f87; font-size: 13px; }
 .check-line input { margin-top: 3px; }
 .check-line .hint { display: block; margin-top: 4px; }

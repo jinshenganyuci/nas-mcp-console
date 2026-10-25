@@ -10,6 +10,7 @@
 
 - 在网页后台新增、编辑、删除凭据；支持中文名称，例如 `家里NAS`、`工作GitHub`。
 - 保存 SSH 密码或私钥、Cloudflare API Token / Global API Key、Alist 账号密码、GitHub Token、Docker Hub / GHCR Token。
+- SSH 支持默认内网地址与可选外网域名、端口，共用同一登录凭据；已有条目无需重新填写。
 - 在配置时测试认证是否可用，SSH 首次连接支持确认主机指纹。
 - 给不同客户端单独授权全部凭据或指定条目，支持撤销。
 - 提供手动客户端 Token，以及内置 OAuth 登录、凭据范围选择和同意授权。
@@ -42,12 +43,14 @@ flowchart LR
 
 ## 镜像与版本
 
-当前发布版本为 **0.3.0**，提供 `linux/amd64`、`linux/arm64` 镜像。
+当前发布版本为 **0.4.0**，提供 `linux/amd64`、`linux/arm64` 镜像。
+
+0.4.0 新增 SSH 内外网双地址：原 `host` / `port` 保持默认内网入口，可另外保存 `external_host` / `external_port`。默认用内网，需要外网时明确告诉客户端；外网留空不影响原来的使用。
 
 | 镜像仓库 | 跟随最新发布 | 固定版本 |
 | --- | --- | --- |
-| [Docker Hub](https://hub.docker.com/r/jinshenganyuci/nas-mcp-console) | `docker.io/jinshenganyuci/nas-mcp-console:latest` | `docker.io/jinshenganyuci/nas-mcp-console:0.3.0` |
-| [GHCR](https://github.com/jinshenganyuci/nas-mcp-console/pkgs/container/nas-mcp-console) | `ghcr.io/jinshenganyuci/nas-mcp-console:latest` | `ghcr.io/jinshenganyuci/nas-mcp-console:0.3.0` |
+| [Docker Hub](https://hub.docker.com/r/jinshenganyuci/nas-mcp-console) | `docker.io/jinshenganyuci/nas-mcp-console:latest` | `docker.io/jinshenganyuci/nas-mcp-console:0.4.0` |
+| [GHCR](https://github.com/jinshenganyuci/nas-mcp-console/pkgs/container/nas-mcp-console) | `ghcr.io/jinshenganyuci/nas-mcp-console:latest` | `ghcr.io/jinshenganyuci/nas-mcp-console:0.4.0` |
 
 两处镜像均公开，拉取本项目镜像无需先配置 GitHub 或 Docker Hub 凭据。[发布记录](https://github.com/jinshenganyuci/nas-mcp-console/releases)
 
@@ -62,7 +65,7 @@ flowchart LR
 最常需要调整的是这三项，修改时保留 Compose 的其他配置：
 
 ```yaml
-# 跟随最新版本时修改 image；希望固定版本则保留原来的 :0.3.0
+# 跟随最新版本时修改 image；希望固定版本则保留原来的 :0.4.0
 image: docker.io/jinshenganyuci/nas-mcp-console:latest
 
 # 左边是 NAS 访问端口，右边的容器端口保持 8090
@@ -97,6 +100,10 @@ docker compose -f compose.fnos.yaml ps
 > 从私人凭据库查找“家里NAS”的 SSH 信息，登录后查看服务状态，不要显示密码。
 
 > 使用凭据库里的 GitHub Token 查看我的仓库，不要回显 Token。
+
+已为 SSH 填写外网地址时，也可以说：
+
+> 我现在在外网，请使用“家里NAS”的外网域名和端口连接，共用已保存的 SSH 凭据。
 
 每台设备或每个独立客户端需要配置一次连接。新对话能否调用，还取决于该客户端是否启用了此 MCP；这与聊天记录记忆是两回事。
 

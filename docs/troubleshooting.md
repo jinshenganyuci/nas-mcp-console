@@ -93,6 +93,12 @@ curl --fail http://127.0.0.1:8090/healthz
 
 Hermes 可先运行 `hermes mcp test private_credentials`。不同 profile 的配置相互独立，应在实际运行会话的 profile 中设置。Codex 的 GUI 进程是否能读到 Token 环境变量，也是常见原因。
 
+## SSH 填了外网地址，为什么仍连接内网
+
+默认入口仍是 `connection.host` / `port`。需要外网时，明确让客户端使用该条目的 `external_host` / `external_port`；两组地址共用登录凭据。未配置外网时，这两个可选字段不会出现。
+
+「测试内网」只检查内网认证；公网 DNS、端口映射和防火墙需由实际外网客户端验证。保存外网字段不会自动建立映射、检测当前位置或切换连接。外网映射端口通常和内网 `22` 不同，应填实际对外端口。
+
 ## OAuth 页面无法添加、循环登录或回调失败
 
 按顺序检查：
@@ -127,7 +133,7 @@ Cloudflare 有一个特别情况：当前 API Token 测试使用用户级 `/user
 
 ## latest 已拉取，为什么看起来没更新
 
-确认 Compose 的 `image` 末尾实际使用的是 `:latest`。默认发布 Compose 固定为 `:0.3.0`，拉取固定标签不会自动改成未来版本。
+确认 Compose 的 `image` 末尾实际使用的是 `:latest`。默认发布 Compose 固定为 `:0.4.0`，拉取固定标签不会自动改成未来版本。
 
 拉取之后还需要 `docker compose -f compose.fnos.yaml up -d`，让容器使用新镜像。保持原有项目目录、挂载路径和运行 UID/GID 不变；更新前先完整备份数据。
 

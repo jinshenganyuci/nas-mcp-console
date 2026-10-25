@@ -326,7 +326,7 @@ class Store:
                 names[field] = name
             return {"registry": registry, **names}
         if kind == "ssh":
-            _check_keys(config, {"host", "port", "username", "auth_method"}, "SSH config")
+            _check_keys(config, {"host", "port", "external_host", "external_port", "username", "auth_method"}, "SSH config")
             host = _host(config.get("host"))
             username = _text(config.get("username"), "SSH username", 128)
             if any(c.isspace() for c in username):
@@ -337,7 +337,17 @@ class Store:
             method = config.get("auth_method", "key")
             if method not in {"password", "key"}:
                 raise ValueError("SSH auth_method must be password or key")
-            return {"host": host, "port": port, "username": username, "auth_method": method}
+            result = {"host": host, "port": port, "username": username, "auth_method": method}
+            external_host = _text(config.get("external_host", ""), "SSH external host", 253, empty=True)
+            if external_host:
+                external_host = _host(external_host)
+                external_port = config.get("external_port", 22)
+                if isinstance(external_port, bool) or not isinstance(external_port, int) or not 1 <= external_port <= 65535:
+                    raise ValueError("SSH external port must be between 1 and 65535")
+                result.update(external_host=external_host, external_port=external_port)
+            elif "external_port" in config:
+                raise ValueError("SSH external port requires an external host")
+            return result
         _check_keys(config, {"url", "username"}, "Alist config")
         return {"url": _url(config.get("url")), "username": _text(config.get("username"), "Alist username", 256)}
 
@@ -358,6 +368,13 @@ class Store:
             allowed -= {"global_api_key"} if cfg["auth_method"] == "api_token" else {"token"}
         with self._lock:
             old = self._state["config"][kind].get(alias, {})
+            if kind == "ssh" and not {"external_host", "external_port"}.intersection(payload.get("config", {})):
+                # An older client cannot edit the optional external endpoint.
+                # Preserve it when both keys are absent; an explicit blank host
+                # from the new form removes it without affecting SSH secrets.
+                for field in ("external_host", "external_port"):
+                    if field in old:
+                        cfg[field] = old[field]
             vault = self._vault.copy()
             if kind == "ssh" and (
                 (old.get("host"), old.get("port", 22)) != (cfg["host"], cfg["port"])

@@ -454,3 +454,122 @@ def test_ssh_password_or_description_changes_keep_host_trust(store):
     update["description"] = "Updated description"
     store.save_service(update)
     assert store.export_credential("ssh/nas", ["*"])["credentials"] == {"password": "new-password", "known_hosts": "trusted-host-key"}
+
+
+def test_ssh_external_endpoint_round_trip_keeps_default_and_credential_scope(store):
+    payload = ssh(password="root-secret", known_hosts="internal-host-key")
+    payload["config"].update(external_host="ssh.example.com", external_port=2222)
+    store.save_service(payload)
+    client = store.create_client("Remote laptop", ["ssh/nas"])
+    restored = Store(store.data_dir)
+    allowed = restored.client_for_token(client["token"])["allowed_services"]
+    metadata = restored.metadata(allowed)
+    assert metadata[0]["connection"] == payload["config"]
+    assert "root-secret" not in json.dumps(metadata)
+    assert restored.services()[0]["config"] == payload["config"]
+    exported = restored.export_credential("ssh/nas", allowed, ["password"])
+    assert exported["connection"] == payload["config"]
+    assert exported["credentials"] == {"password": "root-secret"}
+    assert restored.metadata([]) == []
+    with pytest.raises(ValueError, match="^Credential unavailable$"):
+        restored.export_credential("ssh/nas", [])
+
+
+def test_ssh_external_host_defaults_to_port_22(store):
+    payload = ssh(password="root-secret")
+    payload["config"]["external_host"] = "ssh.example.com"
+    store.save_service(payload)
+    connection = store.metadata(["ssh/nas"])[0]["connection"]
+    assert connection["external_port"] == 22
+    assert connection["host"] == "192.168.1.10" and connection["port"] == 22
+
+
+def test_legacy_ssh_entries_do_not_gain_external_fields_on_reload(store):
+    payload = ssh(password="root-secret", known_hosts="internal-host-key")
+    store.save_service(payload)
+    before = (store.data_dir / "state.json").read_bytes()
+    restored = Store(store.data_dir)
+    assert restored.export_credential("ssh/nas", ["*"])["connection"] == payload["config"]
+    assert (store.data_dir / "state.json").read_bytes() == before
+
+
+def test_old_client_edit_preserves_external_endpoint_and_explicit_clear_removes_it(store):
+    payload = ssh(password="root-secret", known_hosts="internal-host-key")
+    payload["config"].update(external_host="ssh.example.com", external_port=2222)
+    store.save_service(payload)
+    update = ssh(password="")
+    update["description"] = "Edited by an older client"
+    store.save_service(update)
+    result = store.export_credential("ssh/nas", ["*"])
+    assert result["connection"]["external_host"] == "ssh.example.com"
+    assert result["connection"]["external_port"] == 2222
+    assert result["credentials"] == {"password": "root-secret", "known_hosts": "internal-host-key"}
+
+    update["config"]["external_host"] = ""
+    store.save_service(update)
+    restored = Store(store.data_dir)
+    result = restored.export_credential("ssh/nas", ["*"])
+    assert "external_host" not in result["connection"] and "external_port" not in result["connection"]
+    assert result["credentials"] == {"password": "root-secret", "known_hosts": "internal-host-key"}
+
+
+@pytest.mark.parametrize("external_host,external_port", [
+    ("ssh.example.com", 2222),
+    ("new-ssh.example.com", 2222),
+    ("2001:db8::10", 65535),
+])
+def test_external_endpoint_edits_keep_internal_host_trust(store, external_host, external_port):
+    store.save_service(ssh(password="root-secret", known_hosts="internal-host-key"))
+    update = ssh(password="")
+    update["config"].update(external_host=external_host, external_port=external_port)
+    store.save_service(update)
+    record, _ = store.validation_snapshot("ssh", "nas")
+    assert record["connection"]["host"] == "192.168.1.10"
+    assert record["connection"]["port"] == 22
+    assert record["credentials"] == {"password": "root-secret", "known_hosts": "internal-host-key"}
+    update["config"]["external_port"] = 22
+    store.save_service(update)
+    assert store.export_credential("ssh/nas", ["*"])["credentials"]["known_hosts"] == "internal-host-key"
+
+
+def test_internal_endpoint_edit_still_clears_trust_with_external_endpoint_configured(store):
+    payload = ssh(password="root-secret", known_hosts="internal-host-key")
+    payload["config"].update(external_host="ssh.example.com", external_port=2222)
+    store.save_service(payload)
+    update = ssh(password="")
+    update["config"]["host"] = "192.168.1.11"
+    store.save_service(update)
+    record = store.export_credential("ssh/nas", ["*"])
+    assert record["connection"]["external_host"] == "ssh.example.com"
+    assert record["connection"]["external_port"] == 2222
+    assert record["credentials"] == {"password": "root-secret"}
+
+
+@pytest.mark.parametrize("changes", [
+    {"external_host": "https://ssh.example.com"},
+    {"external_host": "ssh.example.com:2222"},
+    {"external_host": "user@ssh.example.com"},
+    {"external_host": "ssh.example.com/path"},
+    {"external_host": " "},
+    {"external_host": None},
+    {"external_host": True},
+    {"external_host": "ssh.example.com\n"},
+    {"external_host": "ssh.example.com", "external_port": True},
+    {"external_host": "ssh.example.com", "external_port": 0},
+    {"external_host": "ssh.example.com", "external_port": 65536},
+    {"external_host": "ssh.example.com", "external_port": 22.5},
+    {"external_host": "ssh.example.com", "external_port": "2222"},
+    {"external_host": "ssh.example.com", "external_port": None},
+    {"external_port": 2222},
+    {"external_host": "", "external_port": 2222},
+])
+def test_invalid_external_ssh_endpoint_does_not_modify_existing_entry(store, changes):
+    store.save_service(ssh(password="root-secret", known_hosts="internal-host-key"))
+    before_state = (store.data_dir / "state.json").read_bytes()
+    before_vault = (store.data_dir / "vault.json").read_bytes()
+    update = ssh(password="should-not-be-saved")
+    update["config"].update(changes)
+    with pytest.raises(ValueError):
+        store.save_service(update)
+    assert (store.data_dir / "state.json").read_bytes() == before_state
+    assert (store.data_dir / "vault.json").read_bytes() == before_vault

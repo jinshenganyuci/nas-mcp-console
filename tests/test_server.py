@@ -145,6 +145,36 @@ def test_credentials_are_returned_only_within_device_scope(web):
     assert values["count"] == 0
 
 
+def test_ssh_internal_and_external_endpoints_share_scoped_credentials(web):
+    client, _, _ = web
+    headers = login(web)
+    connection = {"host": "192.168.1.20", "port": 22, "external_host": "ssh.example.com",
+                  "external_port": 2222, "username": "root", "auth_method": "password"}
+    saved = client.post("/api/services", headers=headers, json={"kind": "ssh", "alias": "双地址NAS",
+        "config": connection, "secrets": {"password": "synthetic-shared-ssh-secret"}})
+    assert saved.status_code == 200, saved.text
+    rows = client.get("/api/services")
+    assert rows.json()["services"][0]["config"] == connection
+    assert "synthetic-shared-ssh-secret" not in rows.text
+    allowed = client.post("/api/clients", headers=headers,
+        json={"name": "allowed", "allowed_services": ["ssh/双地址NAS"]}).json()["token"]
+    denied = client.post("/api/clients", headers=headers,
+        json={"name": "unrelated", "allowed_services": []}).json()["token"]
+    result, found = tool_result(client, allowed, "list_credentials", {"query": "ssh.example.com"})
+    assert found["count"] == 1
+    assert found["credentials"][0]["connection"] == connection
+    assert "synthetic-shared-ssh-secret" not in json.dumps(result)
+    _, value = tool_result(client, allowed, "get_credentials", {"credential_id": "ssh/双地址NAS", "fields": ["password"]})
+    assert value["connection"] == connection
+    assert value["credentials"] == {"password": "synthetic-shared-ssh-secret"}
+    _, hidden = tool_result(client, denied, "list_credentials", {"query": "ssh.example.com"})
+    assert hidden == {"credentials": [], "count": 0}
+    refused = rpc(client, denied, "tools/call", {"name": "get_credentials", "arguments": {"credential_id": "ssh/双地址NAS"}}).json()["result"]
+    assert refused["isError"]
+    assert "ssh.example.com" not in json.dumps(refused)
+    assert "synthetic-shared-ssh-secret" not in json.dumps(refused)
+
+
 def test_chinese_credential_name_http_mcp_scope_and_encoded_routes(web, monkeypatch):
     client, _, _ = web
     headers = login(web)

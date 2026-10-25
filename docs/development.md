@@ -76,7 +76,7 @@ sh tests/container-smoke.sh nas-mcp-console:smoke
 
 ## 发布镜像
 
-仓库工作流在推送 `v*` 标签或手动运行 `Publish container images` 时发布。手动输入和版本标签都必须是稳定语义版本，例如 `0.3.0`，不接受随意的标签字符串。
+仓库工作流在推送 `v*` 标签或手动运行 `Publish container images` 时发布。手动输入和版本标签都必须是稳定语义版本，例如 `0.4.0`，不接受随意的标签字符串。
 
 维护者需要在 GitHub 仓库的 Actions 设置中配置：
 

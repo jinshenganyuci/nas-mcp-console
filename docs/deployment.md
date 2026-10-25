@@ -12,9 +12,9 @@
 
 | 镜像 | 适用方式 |
 | --- | --- |
-| `docker.io/jinshenganyuci/nas-mcp-console:0.3.0` | 随附部署文件的固定版本，升级时手动改版本号 |
+| `docker.io/jinshenganyuci/nas-mcp-console:0.4.0` | 随附部署文件的固定版本，升级时手动改版本号 |
 | `docker.io/jinshenganyuci/nas-mcp-console:latest` | 希望每次主动拉取时升级到最新发布版 |
-| `ghcr.io/jinshenganyuci/nas-mcp-console:0.3.0` | GHCR 备用镜像，固定版本 |
+| `ghcr.io/jinshenganyuci/nas-mcp-console:0.4.0` | GHCR 备用镜像，固定版本 |
 | `ghcr.io/jinshenganyuci/nas-mcp-console:latest` | GHCR 备用镜像，跟随最新发布版 |
 
 `latest` 不会自动更新已经运行的容器，仍需拉取镜像并重新创建。版本与变更说明见 [GitHub Releases](https://github.com/jinshenganyuci/nas-mcp-console/releases)。
@@ -105,7 +105,7 @@ docker compose -f compose.fnos.yaml exec nas-mcp cat /data/first-login.txt
 | 配置项 | 默认值 | 用途 |
 | --- | --- | --- |
 | `services` / `nas-mcp` | 一个服务 | 定义应用；命令中的 `nas-mcp` 就是服务名 |
-| `image` | Docker Hub 的 `0.3.0` | 选择镜像仓库与版本，可改为 `latest` 或 GHCR 地址 |
+| `image` | Docker Hub 的 `0.4.0` | 选择镜像仓库与版本，可改为 `latest` 或 GHCR 地址 |
 | `restart` | `unless-stopped` | Docker 或 NAS 重启后恢复运行，手动停止的服务保持停止 |
 | `init` | `true` | 使用轻量初始化进程，转发退出信号、回收子进程 |
 | `user` | `1000:1000` | 容器运行的 UID/GID，应与数据目录所有者一致 |
@@ -211,7 +211,7 @@ docker compose -f compose.fnos.yaml up -d
 docker compose -f compose.fnos.yaml ps
 ```
 
-固定为 `0.3.0` 时，`pull` 不会把配置自动改成未来的新版本。使用 `latest` 时，每次拉取的版本可能不同，因此升级前保留当前镜像版本记录和完整备份。
+固定为 `0.4.0` 时，`pull` 不会把配置自动改成未来的新版本。使用 `latest` 时，每次拉取的版本可能不同，因此升级前保留当前镜像版本记录和完整备份。
 
 需要回退时，改回先前的明确版本标签再拉取、重建。若新版本修改了数据格式，同时恢复升级前的完整数据备份；不要用不同备份中的文件拼成一个库。特别是 `0.2.0` 不支持中文名称，创建过中文名称后回退到该版本需要恢复对应的旧备份。
 
