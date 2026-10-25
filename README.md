@@ -4,7 +4,13 @@
 
 提供中文可视化后台。飞牛部署配置默认拉取 `docker.io/jinshenganyuci/nas-mcp-console:0.2.0`，无需在 NAS 上构建镜像。
 
-**0.2.0 发布状态：待镜像上传与公开拉取验证完成。**
+**0.2.0 已发布到 Docker Hub 和 GHCR，支持 `linux/amd64`、`linux/arm64`，两个仓库均已验证可匿名读取镜像清单、配置及全部镜像层。**
+
+- Docker Hub：`docker.io/jinshenganyuci/nas-mcp-console:0.2.0`
+- GHCR：`ghcr.io/jinshenganyuci/nas-mcp-console:0.2.0`
+- 两个仓库也提供 `latest` 标签；部署配置默认固定版本，方便控制升级。
+- 镜像摘要：`sha256:9bdb7775641a86e6f9164d519523d534b7f125be33229e5d1b283dcc1ab3d59e`
+- [发布与容器验证记录](https://github.com/jinshenganyuci/nas-mcp-console/actions/runs/40156653251)：186 项测试及 amd64 容器首次启动、认证保护、加密保存、重建后持久化验证通过；arm64 已完成构建与镜像层访问验证。
 
 ## 功能
 
@@ -71,7 +77,7 @@ docker compose -f compose.fnos.yaml up -d
 | `MCP_DATA_VOLUME` | `nas-mcp-data` | 持久化卷名；已有数据后保持不变 |
 | `ALLOWED_HOSTS` | 空 | 额外允许的域名，以逗号分隔；也可在后台设置 |
 
-默认 Docker Hub 仓库 `jinshenganyuci/nas-mcp-console` 已设为公开；版本镜像的上传和拉取结果以本文顶部发布状态为准。备用地址为 `ghcr.io/jinshenganyuci/nas-mcp-console:0.2.0`，尚待公开访问验证，通过后可将 `MCP_IMAGE` 改为该地址使用。
+Docker Hub 与 GHCR 镜像均为公开，无需配置镜像仓库登录即可拉取。若当前网络访问 Docker Hub 不便，可将 `MCP_IMAGE` 改为备用地址 `ghcr.io/jinshenganyuci/nas-mcp-console:0.2.0`。
 
 ## 录入与可用性测试
 
