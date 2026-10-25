@@ -216,7 +216,7 @@
         details.append(meta('镜像仓库', cfg.registry === 'ghcr.io' ? 'ghcr.io' : 'docker.io'), meta('登录用户名', cfg.username), meta('命名空间', cfg.namespace), meta('访问 Token', creds.token ? '已保存' : '未填写'));
       }
       grid.append(node('article', { class: 'service-card' },
-        node('div', { class: 'service-head' }, node('span', { class: `service-icon ${service.kind}`, 'aria-hidden': 'true' }, icon), node('div', { class: 'service-title' }, node('h3', {}, title), node('span', { class: 'service-alias' }, service.alias)), node('span', { class: `badge ${hasSecret ? 'success' : 'neutral'}` }, hasSecret ? '已保存凭据' : '仅基本信息')),
+        node('div', { class: 'service-head' }, node('span', { class: `service-icon ${service.kind}`, 'aria-hidden': 'true' }, icon), node('div', { class: 'service-title' }, node('h3', {}, service.alias), node('span', { class: 'service-alias' }, title)), node('span', { class: `badge ${hasSecret ? 'success' : 'neutral'}` }, hasSecret ? '已保存凭据' : '仅基本信息')),
         node('p', { class: 'service-description' }, service.description || '私人凭据条目'), details,
         node('div', { class: 'service-foot' }, node('div', { class: 'credential-status' }, node('span', { class: 'credential-note' }, `${service.kind}/${service.alias}`), node('span', { class: `verification-note ${verification?.ok ? 'success' : verification ? 'pending' : ''}`, title: verification?.message || '' }, validationText)), node('div', { class: 'card-actions' }, button('测试凭据', event => {
           if (demo) return demoNotice();
@@ -278,8 +278,8 @@
   function serviceDialog(service = null, initialKind = 'cloudflare') {
     const form = node('form', { id: 'service-form' });
     const type = node('select', { name: 'kind', disabled: Boolean(service) }, Object.entries(kinds).map(([value, label]) => node('option', { value, selected: value === (service?.kind || initialKind) }, label)));
-    const alias = textInput('alias', service?.alias || '', { required: true, disabled: Boolean(service), pattern: '[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}', maxlength: 64, placeholder: '例如 home-nas' });
-    const description = textInput('description', service?.description || '', { maxlength: 200, placeholder: '例如家里的 NAS、个人域名账号' });
+    const alias = textInput('alias', service?.alias || '', { required: true, disabled: Boolean(service), pattern: '(?!.*[\\u115F\\u1160\\u3164\\uFFA0])[\\p{L}\\p{N}][\\p{L}\\p{N}_\\-]{0,63}', placeholder: '例如：家里NAS、香港服务器', title: '名称为 1～64 个字，以文字或数字开头，可含短横线和下划线，不含空格。' });
+    const description = textInput('description', service?.description || '', { maxlength: 200, placeholder: '例如：家里飞牛的 root 账号，用于查看服务' });
     if (demo) form.append(node('div', { class: 'notice info' }, '演示模式：可以查看所有配置项，密码和密钥字段仅作展示，不录入或保存真实凭据。'));
     const typeButtons = [];
     if (!service) {
@@ -292,7 +292,7 @@
       }
       form.append(choices);
     }
-    form.append(node('div', { class: 'field-grid' }, field('凭据类型', type), field('条目别名', alias, '以字母或数字开头，可使用短横线或下划线。')), field('描述', description));
+    form.append(node('div', { class: 'field-grid' }, field('凭据类型', type), field('凭据名称', alias, service ? '名称保存后固定，已有客户端授权会继续使用这个名称。补充说明可在备注中修改。' : '给凭据起个好记的名字，方便你和 AI 查找。支持中文、英文、数字及短横线、下划线；以文字或数字开头，最多 64 个字，不含空格。')), field('备注（选填）', description, '补充用途或说明，不是登录用户名。'));
     const dynamic = node('div', { class: 'service-fields' });
     form.append(dynamic);
     let controls = {};
@@ -448,7 +448,7 @@
       const value = `${service.kind}/${service.alias}`;
       const checkbox = node('input', { type: 'checkbox', name: 'allowed_services', value, disabled: true });
       selections.push(checkbox);
-      scopeList.append(node('label', { class: 'scope-option' }, checkbox, node('span', {}, node('strong', {}, service.description || service.alias), node('code', {}, value))));
+      scopeList.append(node('label', { class: 'scope-option' }, checkbox, node('span', {}, node('strong', {}, service.alias), node('code', {}, value))));
     }
     if (!state.services.length) scopeList.append(node('p', { class: 'hint' }, '尚无凭据条目。请先添加条目，或选择允许读取全部凭据。'));
     allowAll.addEventListener('change', () => {

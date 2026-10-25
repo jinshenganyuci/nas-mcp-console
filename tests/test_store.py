@@ -41,6 +41,53 @@ def test_persistent_recovery_without_plaintext_files(store):
     assert restored.client_for_token(client["token"])["allowed_services"] == ["cloudflare/main"]
 
 
+def test_chinese_name_persists_with_exact_client_scope_and_encrypted_secrets(store):
+    store.save_service(cloudflare())
+    original_vault = json.loads((store.data_dir / "vault.json").read_text())
+    alias = "家庭NAS_备用-01"
+    credential_id = f"ssh/{alias}"
+    store.save_service(ssh(password="中文名称对应的测试密码", known_hosts="trusted-host-key") | {"alias": alias})
+    store.save_service(ssh(password="another-password") | {"alias": "家庭NAS_备用-02"})
+    client = store.create_client("个人电脑", [credential_id])
+    store.record_test("ssh", alias, True, "认证成功")
+
+    persisted_vault = json.loads((store.data_dir / "vault.json").read_text())
+    assert persisted_vault["cloudflare--main--token.secret"] == original_vault["cloudflare--main--token.secret"]
+    assert "中文名称对应的测试密码" not in json.dumps(persisted_vault, ensure_ascii=False)
+    assert f"ssh--{alias}--password.secret" in persisted_vault
+    assert {path.name for path in store.data_dir.iterdir()} == {"master.key", "state.json", "vault.json", "first-login.txt"}
+
+    restored = Store(store.data_dir)
+    identity = restored.client_for_token(client["token"])
+    assert identity["allowed_services"] == [credential_id]
+    metadata = restored.metadata(identity["allowed_services"])
+    assert [item["id"] for item in metadata] == [credential_id]
+    assert metadata[0]["alias"] == alias
+    assert restored.export_credential(credential_id, identity["allowed_services"])["credentials"] == {
+        "password": "中文名称对应的测试密码", "known_hosts": "trusted-host-key",
+    }
+    assert next(item for item in restored.services() if item["alias"] == alias)["last_test"]["ok"] is True
+    assert restored.export_credential("cloudflare/main", ["cloudflare/main"])["credentials"] == cloudflare()["secrets"]
+    for unavailable in ("ssh/家庭NAS_备用-02", "cloudflare/main"):
+        with pytest.raises(ValueError, match="^Credential unavailable$"):
+            restored.export_credential(unavailable, identity["allowed_services"])
+    with pytest.raises(ValueError, match="^Credential unavailable$"):
+        restored.export_credential(credential_id, ["cloudflare/main"])
+
+
+@pytest.mark.parametrize("alias", ["中", "中文名称", "中文_名称-01", "名" * 64, "équipe", "Δοκιμή", "١٢٣"])
+def test_unicode_credential_name_round_trip(store, alias):
+    store.save_service(cloudflare() | {"alias": alias})
+    credential_id = f"cloudflare/{alias}"
+    restored = Store(store.data_dir)
+    assert restored.export_credential(credential_id, [credential_id])["alias"] == alias
+    assert restored.metadata([credential_id])[0]["id"] == credential_id
+    restored.save_service(cloudflare("") | {"alias": alias})
+    assert restored.export_credential(credential_id, [credential_id])["credentials"] == cloudflare()["secrets"]
+    restored.delete_service("cloudflare", alias)
+    assert Store(store.data_dir).metadata(["*"]) == []
+
+
 def test_only_export_decrypts_credentials(store, monkeypatch):
     store.save_service(cloudflare())
     original = store._fernet.decrypt
@@ -261,10 +308,24 @@ def test_github_and_docker_tokens_exported_with_scope(store, factory):
     assert payload["secrets"]["token"] not in json.dumps(store.services())
 
 
-@pytest.mark.parametrize("alias", ["../outside", "/absolute", "..", "a/b", "bad name", "a" * 65])
-def test_alias_traversal_rejected(store, alias):
-    with pytest.raises(ValueError):
+@pytest.mark.parametrize("alias", [
+    "", None, 123, "../outside", "/absolute", "..", "a/b", "a\\b", "a:b", "a.b",
+    "bad name", " leading", "trailing ", "中文 名称", "中文\u3000名称", "中文：名称",
+    "_name", "-name", "a" * 65, "名" * 65, "name\n", "a\tname", "a\x00name",
+    "a\x7fname", "a\x85name", "a\u200bname", "a\u200dname", "a\u202ename",
+    "a\ufeffname", "e\u0301", "名\ufe0f", "\u115f", "a\u1160", "a\u3164", "a\uffa0", "🔑名称",
+])
+def test_credential_name_invalid_characters_rejected(store, alias):
+    with pytest.raises(ValueError, match="^凭据名称须为 1–64 个字符"):
         store.save_service(cloudflare() | {"alias": alias})
+    assert store.services() == []
+
+
+@pytest.mark.parametrize("key", ["../outside.secret", "ssh--家庭/NAS--password.secret", "ssh--家庭:NAS--password.secret", "ssh--家庭NAS--password.secret\n"])
+def test_unicode_vault_keys_still_reject_paths_and_controls(store, key):
+    (store.data_dir / "vault.json").write_text(json.dumps({key: "unused-ciphertext"}, ensure_ascii=False))
+    with pytest.raises(ValueError, match="Invalid credential entry in vault"):
+        Store(store.data_dir)
 
 
 @pytest.mark.parametrize("change", [{"config": {"token_file": "../../etc/passwd"}}, {"secrets": {"unexpected": "secret"}}, {"unexpected": "secret"}, {"config": {"auth_method": "unknown"}}, {"config": {"email": "invalid"}}])

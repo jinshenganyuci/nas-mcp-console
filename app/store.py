@@ -28,7 +28,9 @@ from .oauth import build_oauth
 
 
 KINDS = ("cloudflare", "ssh", "alist", "github", "docker")
-ALIAS = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
+# Unicode word characters include four invisible Hangul fillers; exclude them
+# as well as the whitespace, combining marks and controls rejected by \w.
+ALIAS = re.compile(r"(?!.*[\u115f\u1160\u3164\uffa0])[^\W_][\w-]{0,63}\Z")
 GITHUB_OWNER = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\Z")
 REGISTRY_NAME = re.compile(r"[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*\Z")
 SECRET_FIELDS = {
@@ -186,9 +188,10 @@ class Store:
             self._vault = {}
             self._atomic(self.data_dir / "first-login.txt", (password + "\n").encode())
             self._persist()
-        # Validate vault structure without decrypting any stored credential.
+        # These references are JSON keys, never filesystem paths. Preserve the
+        # existing key format while allowing Unicode credential names.
         for name, encrypted in self._vault.items():
-            if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}\.secret", name) or not isinstance(encrypted, str):
+            if not isinstance(name, str) or not re.fullmatch(r"[\w-]{1,200}\.secret", name) or not isinstance(encrypted, str):
                 raise ValueError("Invalid credential entry in vault")
 
     @staticmethod
@@ -264,8 +267,10 @@ class Store:
 
     @staticmethod
     def _identity(kind, alias) -> tuple[str, str]:
-        if kind not in KINDS or not isinstance(alias, str) or not ALIAS.fullmatch(alias):
-            raise ValueError("Invalid service kind or alias")
+        if kind not in KINDS:
+            raise ValueError("不支持的凭据类型")
+        if not isinstance(alias, str) or not ALIAS.fullmatch(alias):
+            raise ValueError("凭据名称须为 1–64 个字符，以字母（含中文）或数字开头，只能包含字母、数字、下划线（_）和短横线（-），不能包含空格或隐藏字符。")
         return kind, alias
 
     def services(self) -> list[dict]:
@@ -367,12 +372,12 @@ class Store:
                 if name not in allowed:
                     vault.pop(old.get(field), None)
                     continue
-                filename = f"{kind}--{alias}--{name}.secret"
+                credential_key = f"{kind}--{alias}--{name}.secret"
                 value = values.get(name, "")
                 if value.strip():
-                    vault[filename] = self._fernet.encrypt(value.encode("utf-8")).decode("ascii")
-                    cfg[field] = filename
-                    if old.get(field) != filename:
+                    vault[credential_key] = self._fernet.encrypt(value.encode("utf-8")).decode("ascii")
+                    cfg[field] = credential_key
+                    if old.get(field) != credential_key:
                         vault.pop(old.get(field), None)
                 elif old.get(field) in vault:
                     cfg[field] = old[field]

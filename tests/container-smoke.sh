@@ -83,7 +83,7 @@ def post(path, payload, csrf=None):
         return json.load(response)
 login = post('/api/login', {'password': password})
 session = post('/api/password', {'current_password': password, 'new_password': 'container-smoke-test-password'}, login['csrf_token'])
-post('/api/services', {'kind': 'ssh', 'alias': 'container-smoke', 'config': {'host': '192.0.2.10', 'port': 22, 'username': 'root', 'auth_method': 'password'}, 'secrets': {'password': 'synthetic-container-credential'}}, session['csrf_token'])
+post('/api/services', {'kind': 'ssh', 'alias': '容器持久化测试', 'config': {'host': '192.0.2.10', 'port': 22, 'username': 'root', 'auth_method': 'password'}, 'secrets': {'password': 'synthetic-container-credential'}}, session['csrf_token'])
 assert not (data / 'first-login.txt').exists()
 assert 'synthetic-container-credential' not in (data / 'vault.json').read_text()
 print('First boot, non-root bind-mount access, login, and encrypted save passed')
@@ -104,11 +104,12 @@ assert data.stat().st_mode & 0o777 == 0o700
 store = Store(data)
 assert not store.must_change_password
 assert store.verify_password('container-smoke-test-password')
-record = store.export_credential('ssh/container-smoke', ['*'])
+record = store.export_credential('ssh/容器持久化测试', ['*'])
+assert record['alias'] == '容器持久化测试'
 assert record['credentials']['password'] == 'synthetic-container-credential'
 assert not Path('/data/first-login.txt').exists()
 for name in ('master.key', 'vault.json', 'state.json'):
     assert (data / name).stat().st_uid == uid
     assert (data / name).stat().st_mode & 0o777 == 0o600
-print('Credential persistence after container recreation passed')
+print('Chinese credential name and credential persistence after container recreation passed')
 PY

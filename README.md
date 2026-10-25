@@ -2,19 +2,17 @@
 
 把 SSH 信息、账号密码、API 密钥和 Token 长期保存在自己的 NAS，在新对话和其他设备上通过 MCP 按授权获取，省去反复手动粘贴。
 
-提供中文可视化后台。飞牛部署配置默认拉取 `docker.io/jinshenganyuci/nas-mcp-console:0.2.0`，无需在 NAS 上构建镜像。
+提供中文可视化后台。飞牛部署配置默认拉取 `docker.io/jinshenganyuci/nas-mcp-console:0.2.1`，无需在 NAS 上构建镜像。
 
-**0.2.0 已发布到 Docker Hub 和 GHCR，支持 `linux/amd64`、`linux/arm64`，两个仓库均已验证可匿名读取镜像清单、配置及全部镜像层。**
+**0.2.1 支持中文凭据名称，兼容已有英文名称与客户端授权。镜像提供 `linux/amd64`、`linux/arm64` 两种架构。**
 
-- Docker Hub：`docker.io/jinshenganyuci/nas-mcp-console:0.2.0`
-- GHCR：`ghcr.io/jinshenganyuci/nas-mcp-console:0.2.0`
+- Docker Hub：`docker.io/jinshenganyuci/nas-mcp-console:0.2.1`
+- GHCR：`ghcr.io/jinshenganyuci/nas-mcp-console:0.2.1`
 - 两个仓库也提供 `latest` 标签；部署配置默认固定版本，方便控制升级。
-- 镜像摘要：`sha256:9bdb7775641a86e6f9164d519523d534b7f125be33229e5d1b283dcc1ab3d59e`
-- [发布与容器验证记录](https://github.com/jinshenganyuci/nas-mcp-console/actions/runs/40156653251)：186 项测试及 amd64 容器首次启动、认证保护、加密保存、重建后持久化验证通过；arm64 已完成构建与镜像层访问验证。
 
 ## 功能
 
-- 可视化新增、编辑、删除凭据。秘密字段留空表示保留旧值。
+- 可视化新增、编辑、删除凭据。凭据名称支持中文，例如 `家里NAS`、`香港服务器`；秘密字段留空表示保留旧值。
 - 支持 SSH root/其他账号＋密码、SSH 私钥及口令、Cloudflare API Token/Global API Key、Alist 账号密码、GitHub Token、Docker Hub/GHCR Token。
 - 后台提供“测试凭据”，确认录入的认证信息能否使用。
 - 每个客户端独立生成访问 Token，可授权全部凭据或指定条目，支持撤销。
@@ -25,19 +23,21 @@
 
 ## 使用流程
 
-1. 在后台录入一次服务别名、连接信息和秘密值，例如 SSH 条目 `home-nas`。
+1. 在后台录入一次凭据名称、连接信息和秘密值，例如 SSH 条目 `家里NAS`。
 2. 给某台电脑或 AI 客户端创建访问 Token，选择允许读取哪些凭据。
 3. 将 MCP 地址与客户端 Token 保存到支持的客户端。
 4. 新对话里直接说明任务。AI先查找凭据，再获取所需字段，由当前客户端环境决定如何使用。
 
+“凭据名称”是你和 AI 查找这份账号或密钥时使用的名字，不是登录用户名；“备注”是可选的用途说明。名称为 1～64 个字，支持中文、英文、数字以及短横线、下划线，以文字或数字开头，不含空格。名称保存后固定，编辑时可修改备注及连接信息；已有英文名称不变，原客户端授权继续有效。
+
 调用示例：
 
 ```json
-{"name":"list_credentials","arguments":{"query":"home-nas"}}
+{"name":"list_credentials","arguments":{"query":"家里NAS"}}
 ```
 
 ```json
-{"name":"get_credentials","arguments":{"credential_id":"ssh/home-nas","fields":["password"]}}
+{"name":"get_credentials","arguments":{"credential_id":"ssh/家里NAS","fields":["password"]}}
 ```
 
 `list_credentials`只返回授权范围内的名称、连接信息和可取字段。
@@ -77,13 +77,13 @@ docker compose -f compose.fnos.yaml up -d
 
 | 配置项 | 默认值 | 用途 |
 | --- | --- | --- |
-| `image` | `docker.io/jinshenganyuci/nas-mcp-console:0.2.0` | 镜像地址及版本 |
+| `image` | `docker.io/jinshenganyuci/nas-mcp-console:0.2.1` | 镜像地址及版本 |
 | `ports` | `8090:8090` | 冒号左边是 NAS 端口；更换入口端口时只改左边 |
 | `user` | `1000:1000` | 与 `./data` 所有者匹配的 UID/GID |
 | `volumes` | `./data:/data` | 项目目录下的持久化数据；已有数据后保持挂载位置不变 |
 | `NAS_MCP_ALLOWED_HOSTS` | 空字符串 | 额外允许的域名，以逗号分隔；也可在后台设置 |
 
-Docker Hub 与 GHCR 镜像均为公开，无需配置镜像仓库登录即可拉取。若当前网络访问 Docker Hub 不便，可将 `image` 改为备用地址 `ghcr.io/jinshenganyuci/nas-mcp-console:0.2.0`。
+Docker Hub 与 GHCR 镜像均为公开，无需配置镜像仓库登录即可拉取。若当前网络访问 Docker Hub 不便，可将 `image` 改为备用地址 `ghcr.io/jinshenganyuci/nas-mcp-console:0.2.1`。
 
 ## 录入与可用性测试
 
@@ -145,7 +145,9 @@ docker compose -f compose.fnos.yaml up -d
 docker compose -f compose.fnos.yaml ps
 ```
 
-确认容器健康后访问后台，原凭据和客户端授权仍应存在。版本标签固定为 `0.2.0` 时，上述命令不会自动改成未来的新版本。需要回退时使用原版本镜像；若新版本改变了数据格式，应同时恢复升级前的完整备份。
+确认容器健康后访问后台，原凭据和客户端授权仍应存在。版本标签固定为 `0.2.1` 时，上述命令不会自动改成未来的新版本。需要回退时使用原版本镜像；若新版本改变了数据格式，应同时恢复升级前的完整备份。
+
+`0.2.0` 不支持中文名称；在 `0.2.1` 创建中文名称后，如需回退到 `0.2.0`，请同时恢复升级前的完整备份。
 
 ## 从旧命名卷切换
 

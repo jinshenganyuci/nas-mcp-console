@@ -1,6 +1,7 @@
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import quote
 
 import pytest
 from starlette.testclient import TestClient
@@ -142,6 +143,74 @@ def test_credentials_are_returned_only_within_device_scope(web):
     # Search cannot reveal another device's service metadata either.
     _, values = tool_result(client, token, "list_credentials", {"query": "work"})
     assert values["count"] == 0
+
+
+def test_chinese_credential_name_http_mcp_scope_and_encoded_routes(web, monkeypatch):
+    client, _, _ = web
+    headers = login(web)
+    chinese_alias = "家庭NAS_备用-01"
+    chinese_id = "ssh/" + chinese_alias
+    aliases = (chinese_alias, "office-server")
+    tokens = {}
+    for alias in aliases:
+        saved = client.post("/api/services", headers=headers, json={"kind": "ssh", "alias": alias,
+            "config": {"host": "192.0.2.10", "port": 22, "username": "root", "auth_method": "password"},
+            "secrets": {"password": "synthetic-password-" + alias}})
+        assert saved.status_code == 200, saved.text
+        created = client.post("/api/clients", headers=headers,
+            json={"name": "client-" + alias, "allowed_services": ["ssh/" + alias]})
+        assert created.status_code == 200, created.text
+        assert created.json()["allowed_services"] == ["ssh/" + alias]
+        tokens[alias] = created.json()["token"]
+
+    rows = client.get("/api/services")
+    assert {row["alias"] for row in rows.json()["services"]} == set(aliases)
+    assert "synthetic-password" not in rows.text
+    _, found = tool_result(client, tokens[chinese_alias], "list_credentials", {"query": "家庭"})
+    assert found["count"] == 1
+    assert found["credentials"][0]["id"] == chinese_id
+    assert found["credentials"][0]["alias"] == chinese_alias
+    _, value = tool_result(client, tokens[chinese_alias], "get_credentials",
+        {"credential_id": chinese_id, "fields": ["password"]})
+    assert value["credentials"] == {"password": "synthetic-password-" + chinese_alias}
+
+    # A Chinese ID is still an exact grant; neither client can access the other entry.
+    for allowed, denied in ((chinese_alias, "office-server"), ("office-server", chinese_alias)):
+        _, found = tool_result(client, tokens[allowed], "list_credentials", {"query": denied})
+        assert found == {"credentials": [], "count": 0}
+        forbidden = rpc(client, tokens[allowed], "tools/call", {"name": "get_credentials",
+            "arguments": {"credential_id": "ssh/" + denied}}).json()["result"]
+        assert forbidden["isError"] is True
+        assert "synthetic-password" not in json.dumps(forbidden)
+
+    calls = []
+    def validator(record, trust):
+        calls.append(record["id"])
+        assert record["id"] == chinese_id
+        assert record["credentials"] == {"password": "synthetic-password-" + chinese_alias}
+        assert trust is None
+        return {"ok": True, "message": "中文条目认证测试通过。"}
+    monkeypatch.setattr("app.server.validate_credential", validator)
+    encoded_route = "/api/services/ssh/" + quote(chinese_alias, safe="")
+    assert "%" in encoded_route and chinese_alias not in encoded_route
+    tested = client.post(encoded_route + "/test", headers=headers, json={})
+    assert tested.status_code == 200, tested.text
+    assert tested.json()["ok"] is True and calls == [chinese_id]
+    assert "synthetic-password" not in tested.text
+    row = next(row for row in client.get("/api/services").json()["services"] if row["alias"] == chinese_alias)
+    assert row["last_test"]["ok"] is True
+
+    deleted = client.delete(encoded_route, headers=headers)
+    assert deleted.status_code == 200, deleted.text
+    _, found = tool_result(client, tokens[chinese_alias], "list_credentials", {})
+    assert found == {"credentials": [], "count": 0}
+    missing = rpc(client, tokens[chinese_alias], "tools/call", {"name": "get_credentials",
+        "arguments": {"credential_id": chinese_id}}).json()["result"]
+    assert missing["isError"] is True
+    _, remaining = tool_result(client, tokens["office-server"], "get_credentials",
+        {"credential_id": "ssh/office-server", "fields": ["password"]})
+    assert remaining["id"] == "ssh/office-server"
+    assert remaining["credentials"] == {"password": "synthetic-password-office-server"}
 
 
 def test_validation_is_admin_only_and_not_an_mcp_tool(web, monkeypatch):
