@@ -318,10 +318,7 @@ def create_app(data_dir: Path | None = None):
     @asynccontextmanager
     async def lifespan(app):
         async with mcp.session_manager.run():
-            try:
-                yield
-            finally:
-                store.close()
+            yield
 
     web = Starlette(routes=[Route("/", static), Route("/admin", static),
         Route("/static/{asset}", static), Route("/healthz", health),

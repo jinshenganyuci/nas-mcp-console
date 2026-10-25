@@ -12,7 +12,6 @@ import hmac
 import ipaddress
 import json
 import os
-import posixpath
 import re
 import secrets
 import tempfile
@@ -152,7 +151,7 @@ class Store:
                 for cfg in self._state["config"][kind].values():
                     if not isinstance(cfg, dict):
                         raise ValueError("Invalid stored service configuration")
-                    deprecated = "checks" if kind == "ssh" else "socket_path" if kind == "docker" else None
+                    deprecated = {"ssh": "checks", "docker": "socket_path", "alist": "root_path"}.get(kind)
                     if deprecated in cfg:
                         del cfg[deprecated]
                         migrated = True
@@ -263,10 +262,6 @@ class Store:
             self._persist_state()
             (self.data_dir / "first-login.txt").unlink(missing_ok=True)
 
-    def config(self) -> dict:
-        with self._lock:
-            return copy.deepcopy(self._state["config"])
-
     @staticmethod
     def _identity(kind, alias) -> tuple[str, str]:
         if kind not in KINDS or not isinstance(alias, str) or not ALIAS.fullmatch(alias):
@@ -296,6 +291,8 @@ class Store:
                 config.pop("checks", None)
             if kind == "docker":
                 config.pop("socket_path", None)
+            if kind == "alist":
+                config.pop("root_path", None)
         if kind == "cloudflare":
             _check_keys(config, {"auth_method", "email"}, "Cloudflare config")
             method = config.get("auth_method", "api_token")
@@ -336,11 +333,8 @@ class Store:
             if method not in {"password", "key"}:
                 raise ValueError("SSH auth_method must be password or key")
             return {"host": host, "port": port, "username": username, "auth_method": method}
-        _check_keys(config, {"url", "username", "root_path"}, "Alist config")
-        root = _text(config.get("root_path", "/"), "Alist root_path", 2048)
-        if not root.startswith("/") or root.startswith("//") or "\\" in root or ".." in root.split("/"):
-            raise ValueError("Alist root_path must be an absolute path without traversal")
-        return {"url": _url(config.get("url")), "username": _text(config.get("username"), "Alist username", 256), "root_path": posixpath.normpath(root)}
+        _check_keys(config, {"url", "username"}, "Alist config")
+        return {"url": _url(config.get("url")), "username": _text(config.get("username"), "Alist username", 256)}
 
     def save_service(self, payload: dict) -> None:
         _check_keys(payload, {"kind", "alias", "description", "config", "secrets"}, "Service")
@@ -564,9 +558,6 @@ class Store:
                     return {"id": identifier, "name": client["name"], "allowed_services": copy.deepcopy(client["allowed_services"])}
             return None
 
-    def validate_client_token(self, token: str) -> bool:
-        return self.client_for_token(token) is not None
-
     def settings(self) -> dict:
         with self._lock:
             return copy.deepcopy(self._state["settings"])
@@ -596,6 +587,3 @@ class Store:
                     raise ValueError("OAuth resource_server_url must equal public_url + /mcp")
             self._state["settings"] = {"public_url": public, "allowed_hosts": list(dict.fromkeys(hosts)), "oauth": oauth}
             self._persist_state()
-
-    def close(self) -> None:
-        """Kept for application lifespan compatibility; no plaintext files exist."""

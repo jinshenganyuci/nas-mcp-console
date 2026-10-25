@@ -1,7 +1,6 @@
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient

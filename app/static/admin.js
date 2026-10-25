@@ -503,11 +503,11 @@
       allowed_subjects: node('textarea', { name: 'allowed_subjects', rows: 2, value: (oauth.allowed_subjects || []).join('\n'), spellcheck: false, placeholder: '你的身份提供方用户 subject ID' }),
       required_scopes: textInput('required_scopes', (oauth.required_scopes || []).join(', '), { placeholder: '例如 mcp:read' }),
     };
-    oauthFields.append(node('div', { class: 'notice info' }, '此功能需要已配置好的外部 OAuth 身份提供方。打开开关不会自动完成网页登录或创建授权服务。'), node('div', { class: 'field-grid' }, field('Issuer URL', controls.issuer_url), field('MCP 资源地址', controls.resource_server_url), field('Audience', controls.audience), field('JWKS URL', controls.jwks_url)), field('允许的用户 Subject', controls.allowed_subjects, '每行一个，只允许列出的身份访问。'), field('必需的 Scopes', controls.required_scopes, '用逗号分隔，必须与身份提供方授予的权限一致。'));
+    oauthFields.append(node('div', { class: 'notice info' }, '此功能需要已配置好的外部 OAuth 身份提供方。打开开关不会自动完成网页登录或创建授权服务。'), node('div', { class: 'field-grid' }, field('Issuer URL', controls.issuer_url), field('MCP 资源地址', controls.resource_server_url), field('Audience', controls.audience), field('JWKS URL', controls.jwks_url)), field('允许的用户 Subject', controls.allowed_subjects, '每行一个。列出的 OAuth 身份视为库所有者，可读取全部凭据；需要限制到指定条目时，请使用客户端 Token。'), field('必需的 Scopes', controls.required_scopes, '用逗号分隔，必须与身份提供方授予的权限一致。'));
     form.append(node('section', { class: 'panel' }, node('div', { class: 'panel-heading' }, node('div', {}, node('h2', {}, 'OAuth 连接'), node('p', {}, '供需要 OAuth 登录的网页或其他客户端使用。'))), node('div', { class: 'panel-body' }, node('label', { class: 'check-line' }, enabled, node('span', {}, node('strong', {}, '启用外部 OAuth 验证'), node('span', { class: 'hint' }, '已有 Bearer Token 的桌面客户端仍可继续使用。'))), oauthFields)));
     const submit = node('button', { class: 'button primary', type: 'submit' }, '保存访问设置');
     const resultLine = node('div', { class: 'notice success', role: 'status', hidden: true });
-    form.append(resultLine, node('div', { class: 'actions' }, node('span', { class: 'hint' }, '部分访问设置需要重启容器后生效。'), submit));
+    form.append(resultLine, node('div', { class: 'actions' }, node('span', { class: 'hint' }, '部分访问设置需要重启服务后生效；容器部署可通过 Compose 重启。'), submit));
     form.addEventListener('submit', event => {
       event.preventDefault();
       if (demo) return demoNotice();
@@ -522,7 +522,7 @@
         const payload = { public_url: url.value.trim(), allowed_hosts: lines(hosts.value), oauth: oauthPayload };
         const result = await api('/api/settings', { method: 'PUT', body: payload });
         state.settings = payload;
-        resultLine.textContent = result.restart_required ? '设置已保存。请在 NAS 的 Compose 管理中重启容器，使访问设置生效。' : '访问设置已保存。';
+        resultLine.textContent = result.restart_required ? '设置已保存。请重启服务使访问设置生效；容器部署可在 Compose 管理中重启。' : '访问设置已保存。';
         resultLine.hidden = false;
         toast('访问设置已保存。');
       });

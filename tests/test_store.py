@@ -8,9 +8,7 @@ from app.store import Store
 
 @pytest.fixture
 def store(tmp_path):
-    value = Store(tmp_path / "data")
-    yield value
-    value.close()
+    return Store(tmp_path / "data")
 
 
 def cloudflare(token="cf-super-secret-token-123", **config):
@@ -53,7 +51,6 @@ def test_only_export_decrypts_credentials(store, monkeypatch):
     monkeypatch.setattr(store._fernet, "decrypt", decrypt)
     store.metadata(["*"])
     store.services()
-    store.config()
     store.save_service(cloudflare(""))
     store.record_test("cloudflare", "main", True, "Authentication verified")
     store.client_for_token(store.create_client("Desktop")["token"])
@@ -104,14 +101,13 @@ def test_client_tokens_revocable_and_usage_write_throttled(store, monkeypatch):
     monkeypatch.setattr(store, "_persist_state", lambda: (calls.append(True), original()))
     identity = store.client_for_token(client["token"])
     assert identity == {"id": client["id"], "name": "Laptop", "allowed_services": ["ssh/nas"]}
-    assert store.validate_client_token(client["token"]) and len(calls) == 1
+    assert store.client_for_token(client["token"]) == identity and len(calls) == 1
     identity["allowed_services"].append("*")
     assert store.client_for_token(client["token"])["allowed_services"] == ["ssh/nas"]
     assert store.clients()[0]["allowed_services"] == ["ssh/nas"]
     assert store.clients()[0]["last_used"] is not None
     store.revoke_client(client["id"])
     assert store.client_for_token(client["token"]) is None
-    assert not store.validate_client_token(client["token"])
 
 
 def test_client_default_and_empty_scope_are_distinct(store):
@@ -135,7 +131,7 @@ def test_metadata_is_scoped_and_contains_no_plaintext(store):
     assert results == [{"id": "ssh/nas", "kind": "ssh", "alias": "nas", "description": "Home NAS", "connection": {"host": "192.168.1.10", "port": 22, "username": "root", "auth_method": "password"}, "available_fields": ["password", "known_hosts"]}]
     assert "root-secret" not in json.dumps(results) and len(store.metadata(["*"])) == 2
     results[0]["connection"]["host"] = "changed"
-    assert store.config()["ssh"]["nas"]["host"] == "192.168.1.10"
+    assert store.metadata(["ssh/nas"])[0]["connection"]["host"] == "192.168.1.10"
 
 
 def test_export_filters_fields_and_returns_actual_credentials(store):
@@ -186,10 +182,8 @@ def test_cloudflare_global_key_and_auth_switch(store):
     result = store.export_credential("cloudflare/main", ["*"])
     assert result["connection"] == {"auth_method": "global_key", "email": "owner@example.test"}
     assert result["credentials"] == {"global_api_key": "global-key-secret"}
-    assert "token_file" not in store.config()["cloudflare"]["main"]
     store.save_service(cloudflare("new-api-token"))
     assert store.export_credential("cloudflare/main", ["*"])["credentials"] == {"token": "new-api-token"}
-    assert "global_api_key_file" not in store.config()["cloudflare"]["main"]
 
 
 def test_delete_removes_vault_entries(store):
@@ -203,30 +197,41 @@ def test_retired_execution_configuration_is_discarded_on_save(store):
     payload["config"]["checks"] = {"anything": "must never be executed"}
     store.save_service(payload)
     store.save_service(docker(socket_path="tcp://never-connect:2375"))
-    assert "checks" not in store.config()["ssh"]["nas"]
-    assert "socket_path" not in store.config()["docker"]["images"]
+    alist = {"kind": "alist", "alias": "files", "config": {"url": "http://nas:5244", "username": "user"}, "secrets": {"password": "alist-secret"}}
+    store.save_service(alist)
+    store.save_service(alist | {"config": alist["config"] | {"root_path": "../retired/path"}, "secrets": {"password": ""}})
+    assert "checks" not in store.metadata(["ssh/nas"])[0]["connection"]
+    assert "socket_path" not in store.metadata(["docker/images"])[0]["connection"]
+    result = store.export_credential("alist/files", ["*"])
+    assert result["connection"] == {"url": "http://nas:5244", "username": "user"}
+    assert result["credentials"] == {"password": "alist-secret"}
 
 
 def test_legacy_migration_preserves_secrets_and_client_access(store):
     store.save_service(cloudflare())
     store.save_service(ssh(password="root-secret", known_hosts="old-host-data"))
+    store.save_service({"kind": "alist", "alias": "files", "config": {"url": "http://nas:5244", "username": "user"}, "secrets": {"password": "alist-secret"}})
     client = store.create_client("Legacy laptop")
     original_vault = (store.data_dir / "vault.json").read_bytes()
     state_path = store.data_dir / "state.json"
     legacy = json.loads(state_path.read_text())
     legacy["config"]["cloudflare"]["main"].pop("auth_method")
     legacy["config"]["ssh"]["nas"]["checks"] = {"status": "old-command"}
+    legacy["config"]["alist"]["files"]["root_path"] = "/old-file-scope"
     legacy["config"]["docker"]["old"] = {"registry": "docker.io", "username": "builder", "namespace": "team", "socket_path": "/var/run/docker.sock"}
     legacy["config"].pop("github")
     legacy["clients"][client["id"]].pop("allowed_services")
     state_path.write_text(json.dumps(legacy))
     restored = Store(store.data_dir)
-    assert restored.config()["github"] == {}
-    assert "checks" not in restored.config()["ssh"]["nas"]
-    assert "socket_path" not in restored.config()["docker"]["old"]
-    assert restored.config()["cloudflare"]["main"]["auth_method"] == "api_token"
+    migrated = json.loads(state_path.read_text())["config"]
+    assert migrated["github"] == {}
+    assert "checks" not in migrated["ssh"]["nas"]
+    assert "socket_path" not in migrated["docker"]["old"]
+    assert "root_path" not in migrated["alist"]["files"]
+    assert restored.metadata(["cloudflare/main"])[0]["connection"]["auth_method"] == "api_token"
     assert restored.client_for_token(client["token"])["allowed_services"] == ["*"]
     assert restored.export_credential("ssh/nas", ["*"])["credentials"] == {"password": "root-secret", "known_hosts": "old-host-data"}
+    assert restored.export_credential("alist/files", ["*"])["credentials"] == {"password": "alist-secret"}
     assert (store.data_dir / "vault.json").read_bytes() == original_vault
 
 
@@ -241,8 +246,10 @@ def test_verification_summary_preserved_without_decryption(store, monkeypatch):
     assert store.services()[0]["last_test"] is None
 
 
-def test_new_store_has_all_five_groups(store):
-    assert store.config() == {"cloudflare": {}, "ssh": {}, "alist": {}, "github": {}, "docker": {}}
+def test_new_store_has_no_credentials_or_clients(store):
+    assert store.metadata(["*"]) == []
+    assert store.services() == []
+    assert store.clients() == []
 
 
 @pytest.mark.parametrize("factory", [github, docker])
@@ -274,9 +281,9 @@ def test_invalid_ssh_config(store, changes):
         store.save_service(payload)
 
 
-@pytest.mark.parametrize("changes", [{"url": "http://user:password@nas:5244"}, {"url": "file:///etc/passwd"}, {"root_path": "relative"}, {"root_path": "/allowed/../private"}])
+@pytest.mark.parametrize("changes", [{"url": "http://user:password@nas:5244"}, {"url": "file:///etc/passwd"}])
 def test_invalid_alist_config(store, changes):
-    payload = {"kind": "alist", "alias": "files", "config": {"url": "http://nas:5244", "username": "user", "root_path": "/files"} | changes}
+    payload = {"kind": "alist", "alias": "files", "config": {"url": "http://nas:5244", "username": "user"} | changes}
     with pytest.raises(ValueError):
         store.save_service(payload)
 
@@ -328,7 +335,7 @@ def test_missing_master_key_never_replaces_existing_vault(store):
 
 def test_corrupt_ciphertext_is_detected_only_on_export(store):
     store.save_service(cloudflare())
-    identifier = store.config()["cloudflare"]["main"]["token_file"]
+    identifier = next(iter(json.loads((store.data_dir / "vault.json").read_text())))
     (store.data_dir / "vault.json").write_text(json.dumps({identifier: "invalid-ciphertext"}))
     restored = Store(store.data_dir)
     assert restored.metadata(["*"])[0]["available_fields"] == ["token"]
