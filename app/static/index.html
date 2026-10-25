@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>我的 NAS · MCP 管理</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/admin.js" defer></script>
+</head>
+<body>
+  <div id="auth-screen" class="auth-screen" hidden>
+    <section class="auth-card" aria-labelledby="auth-title">
+      <div class="auth-logo" aria-hidden="true">M</div>
+      <div class="auth-heading">
+        <p class="eyebrow">PRIVATE NAS MCP</p>
+        <h1 id="auth-title">连接你的服务</h1>
+        <p id="auth-description">登录私人管理后台，管理服务连接与客户端授权。</p>
+      </div>
+      <form id="login-form" class="auth-form">
+        <label class="field">
+          <span class="field-label">管理密码</span>
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required placeholder="输入管理密码">
+        </label>
+        <p id="login-error" class="field-error" role="alert" hidden></p>
+        <button class="button primary full-width" type="submit">登录后台 <span aria-hidden="true">→</span></button>
+      </form>
+      <form id="password-form" class="auth-form" hidden>
+        <label class="field">
+          <span class="field-label">当前密码</span>
+          <input name="current_password" type="password" autocomplete="current-password" required placeholder="输入刚才使用的密码">
+        </label>
+        <label class="field">
+          <span class="field-label">新管理密码</span>
+          <input name="new_password" type="password" autocomplete="new-password" minlength="12" required placeholder="至少 12 个字符">
+        </label>
+        <label class="field">
+          <span class="field-label">再次输入新密码</span>
+          <input name="confirm_password" type="password" autocomplete="new-password" minlength="12" required placeholder="确认新密码">
+        </label>
+        <p id="password-error" class="field-error" role="alert" hidden></p>
+        <button class="button primary full-width" type="submit">保存新密码并进入</button>
+      </form>
+      <div id="first-login-note" class="auth-footer">首次登录密码保存在 NAS 的 <code>data/first-login.txt</code>。首次登录后需要设置自己的管理密码。</div>
+    </section>
+  </div>
+
+  <div id="app-shell" class="app-shell" hidden>
+    <aside class="sidebar" aria-label="主导航">
+      <a class="brand" href="#services" aria-label="我的 NAS MCP 首页">
+        <span class="brand-icon" aria-hidden="true">M</span>
+        <span><span class="brand-name">我的 NAS</span><span class="brand-subtitle">PRIVATE MCP</span></span>
+      </a>
+      <nav class="nav-list">
+        <button class="nav-button active" type="button" data-view="services" aria-current="page"><span class="nav-icon" aria-hidden="true">▦</span><span>服务连接</span></button>
+        <button class="nav-button" type="button" data-view="clients"><span class="nav-icon" aria-hidden="true">⌘</span><span>客户端授权</span></button>
+        <button class="nav-button" type="button" data-view="settings"><span class="nav-icon" aria-hidden="true">⚙</span><span>访问设置</span></button>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="sidebar-status"><span class="status-dot" aria-hidden="true"></span>你的服务，由你掌握</div>
+        <p>凭据保存在 NAS<br>让每次新对话都能继续工作</p>
+        <span class="version">NAS MCP · 私人工作区</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-title"><span class="workspace-mark" aria-hidden="true">◈</span>私人工作区<span class="topbar-separator">/</span><span id="current-view-label">服务连接</span></div>
+        <div class="topbar-actions"><span id="demo-chip" class="badge neutral" hidden>演示模式</span><button id="change-password" class="button ghost small" type="button">修改密码</button><button id="logout" class="button ghost small" type="button">退出</button></div>
+      </header>
+      <div id="demo-banner" class="demo-banner" hidden><strong>界面预览</strong><span>以下为虚构示例，不连接实际服务，也不会保存或收集凭据。</span></div>
+      <div id="content" class="content" aria-live="polite"></div>
+    </main>
+  </div>
+
+  <div id="initial-loading" class="auth-screen"><div class="loading" role="status">正在打开私人工作区…</div></div>
+  <dialog id="modal" class="modal" aria-labelledby="modal-title"></dialog>
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
+  <noscript><p class="notice error">请开启 JavaScript 后使用管理后台。</p></noscript>
+</body>
+</html>
