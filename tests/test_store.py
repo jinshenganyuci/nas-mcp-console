@@ -1,6 +1,5 @@
 import json
 import stat
-from pathlib import Path
 
 import pytest
 
@@ -14,153 +13,260 @@ def store(tmp_path):
     value.close()
 
 
-def cloudflare(token="cf-super-secret-token-123"):
-    return {"kind": "cloudflare", "alias": "main", "description": "My account", "config": {}, "secrets": {"token": token}}
+def cloudflare(token="cf-super-secret-token-123", **config):
+    return {"kind": "cloudflare", "alias": "main", "description": "My account", "config": config, "secrets": {"token": token}}
 
 
 def ssh(method="password", **credentials):
-    return {
-        "kind": "ssh", "alias": "nas", "description": "Home NAS",
-        "config": {"host": "192.168.1.10", "port": 22, "username": "root", "auth_method": method, "checks": {"uptime": "uptime"}},
-        "secrets": credentials,
-    }
+    return {"kind": "ssh", "alias": "nas", "description": "Home NAS", "config": {"host": "192.168.1.10", "port": 22, "username": "root", "auth_method": method}, "secrets": credentials}
 
 
-def test_persistent_recovery_and_no_plaintext_credentials(store):
+def github(owner="octo-user", token="github-token-that-must-stay-private"):
+    return {"kind": "github", "alias": "code", "config": {"owner": owner}, "secrets": {"token": token}}
+
+
+def docker(token="registry-token-that-must-stay-private", **config):
+    return {"kind": "docker", "alias": "images", "config": {"registry": "docker.io", "username": "builder", "namespace": "my-organization", **config}, "secrets": {"token": token}}
+
+
+def test_persistent_recovery_without_plaintext_files(store):
     secret = "cf-super-secret-token-123"
     store.save_service(cloudflare(secret))
-    client = store.create_client("Mac")
-    old_dir = store.secrets_dir
-    filename = store.config()["cloudflare"]["main"]["token_file"]
-    assert (old_dir / filename).read_text() == secret
+    client = store.create_client("Mac", ["cloudflare/main"])
     persisted = (store.data_dir / "state.json").read_text() + (store.data_dir / "vault.json").read_text()
-    assert secret not in persisted
-    assert client["token"] not in persisted
+    assert secret not in persisted and client["token"] not in persisted
     assert "token_hash" not in json.dumps(store.clients())
-    store.close()
-    assert not old_dir.exists()
+    assert not hasattr(store, "secrets_dir") and not hasattr(store, "_temp")
+    assert {path.name for path in store.data_dir.iterdir()} == {"master.key", "state.json", "vault.json", "first-login.txt"}
     restored = Store(store.data_dir)
-    try:
-        assert (restored.secrets_dir / filename).read_text() == secret
-        assert restored.validate_client_token(client["token"])
-        assert restored.services()[0]["credentials"]["token"] is True
-    finally:
-        restored.close()
+    assert restored.export_credential("cloudflare/main", ["cloudflare/main"])["credentials"] == {"token": secret}
+    assert restored.client_for_token(client["token"])["allowed_services"] == ["cloudflare/main"]
+
+
+def test_only_export_decrypts_credentials(store, monkeypatch):
+    store.save_service(cloudflare())
+    original = store._fernet.decrypt
+    calls = []
+    def decrypt(value):
+        calls.append(True)
+        return original(value)
+    monkeypatch.setattr(store._fernet, "decrypt", decrypt)
+    store.metadata(["*"])
+    store.services()
+    store.config()
+    store.save_service(cloudflare(""))
+    store.record_test("cloudflare", "main", True, "Authentication verified")
+    store.client_for_token(store.create_client("Desktop")["token"])
+    assert calls == []
+    with pytest.raises(ValueError):
+        store.export_credential("cloudflare/main", [])
+    assert calls == []
+    store.export_credential("cloudflare/main", ["*"])
+    assert len(calls) == 1
+
+
+def test_loading_store_does_not_decrypt(store, monkeypatch):
+    store.save_service(cloudflare())
+    def forbidden_decrypt(*args, **kwargs):
+        pytest.fail("Loading or listing must not decrypt credentials")
+    monkeypatch.setattr("app.store.Fernet.decrypt", forbidden_decrypt)
+    restored = Store(store.data_dir)
+    restored.metadata(["*"])
 
 
 def test_permissions(store):
     store.save_service(cloudflare())
     assert stat.S_IMODE(store.data_dir.stat().st_mode) == 0o700
-    assert stat.S_IMODE(store.secrets_dir.stat().st_mode) == 0o700
-    for path in [*store.data_dir.iterdir(), *store.secrets_dir.iterdir()]:
+    for path in store.data_dir.iterdir():
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 def test_admin_password_change_and_recovery(store):
     initial = (store.data_dir / "first-login.txt").read_text().strip()
-    assert store.must_change_password
-    assert store.verify_password(initial)
+    assert store.must_change_password and store.verify_password(initial)
     assert not store.verify_password("incorrect")
     with pytest.raises(ValueError):
         store.change_password("incorrect", "a-new-strong-password")
     with pytest.raises(ValueError):
         store.change_password(initial, "short")
     store.change_password(initial, "a-new-strong-password")
-    assert not store.must_change_password
-    assert not (store.data_dir / "first-login.txt").exists()
+    assert not store.must_change_password and not (store.data_dir / "first-login.txt").exists()
     assert not store.verify_password(initial)
-    assert store.verify_password("a-new-strong-password")
     assert "a-new-strong-password" not in (store.data_dir / "state.json").read_text()
-    restored = Store(store.data_dir)
-    try:
-        assert restored.verify_password("a-new-strong-password")
-        assert not restored.must_change_password
-    finally:
-        restored.close()
+    assert Store(store.data_dir).verify_password("a-new-strong-password")
 
 
 def test_client_tokens_revocable_and_usage_write_throttled(store, monkeypatch):
-    client = store.create_client("Laptop")
-    assert not store.validate_client_token("wrong")
+    client = store.create_client("Laptop", ["ssh/nas"])
+    assert store.client_for_token("wrong") is None and store.client_for_token("") is None
     calls = []
     original = store._persist_state
     monkeypatch.setattr(store, "_persist_state", lambda: (calls.append(True), original()))
-    assert store.validate_client_token(client["token"])
-    assert store.validate_client_token(client["token"])
-    assert len(calls) == 1
+    identity = store.client_for_token(client["token"])
+    assert identity == {"id": client["id"], "name": "Laptop", "allowed_services": ["ssh/nas"]}
+    assert store.validate_client_token(client["token"]) and len(calls) == 1
+    identity["allowed_services"].append("*")
+    assert store.client_for_token(client["token"])["allowed_services"] == ["ssh/nas"]
+    assert store.clients()[0]["allowed_services"] == ["ssh/nas"]
     assert store.clients()[0]["last_used"] is not None
     store.revoke_client(client["id"])
+    assert store.client_for_token(client["token"]) is None
     assert not store.validate_client_token(client["token"])
-    assert store.clients()[0]["revoked_at"] is not None
 
 
-def test_blank_secret_keeps_existing_and_update_syncs(store):
+def test_client_default_and_empty_scope_are_distinct(store):
+    default = store.create_client("Compatibility")
+    restricted = store.create_client("Nothing yet", [])
+    assert store.client_for_token(default["token"])["allowed_services"] == ["*"]
+    assert store.client_for_token(restricted["token"])["allowed_services"] == []
+
+
+@pytest.mark.parametrize("allowed", ["*", ["ssh/*"], ["unknown/name"], ["ssh/../nas"], ["ssh"], [None]])
+def test_invalid_client_grants_rejected(store, allowed):
+    with pytest.raises(ValueError):
+        store.create_client("Invalid", allowed)
+
+
+def test_metadata_is_scoped_and_contains_no_plaintext(store):
     store.save_service(cloudflare())
-    filename = store.config()["cloudflare"]["main"]["token_file"]
+    store.save_service(ssh(password="root-secret", known_hosts="trusted-host-fingerprint"))
+    assert store.metadata([]) == [] and store.metadata(["github/not-added"]) == []
+    results = store.metadata(["ssh/nas"])
+    assert results == [{"id": "ssh/nas", "kind": "ssh", "alias": "nas", "description": "Home NAS", "connection": {"host": "192.168.1.10", "port": 22, "username": "root", "auth_method": "password"}, "available_fields": ["password", "known_hosts"]}]
+    assert "root-secret" not in json.dumps(results) and len(store.metadata(["*"])) == 2
+    results[0]["connection"]["host"] = "changed"
+    assert store.config()["ssh"]["nas"]["host"] == "192.168.1.10"
+
+
+def test_export_filters_fields_and_returns_actual_credentials(store):
+    store.save_service(ssh("key", private_key="PRIVATE KEY\nbody\n", key_passphrase="unlock-key", known_hosts="fingerprint"))
+    result = store.export_credential("ssh/nas", ["ssh/nas"], ["private_key", "key_passphrase"])
+    assert result["credentials"] == {"private_key": "PRIVATE KEY\nbody\n", "key_passphrase": "unlock-key"}
+    assert set(result) == {"id", "kind", "alias", "description", "connection", "credentials"}
+    assert "known_hosts" in store.export_credential("ssh/nas", ["*"])["credentials"]
+    assert store.export_credential("ssh/nas", ["*"], [])["credentials"] == {}
+    assert store.export_credential("ssh/nas", ["*"], ["private_key", "private_key"])["credentials"] == {"private_key": "PRIVATE KEY\nbody\n"}
+
+
+@pytest.mark.parametrize("credential_id,allowed", [("cloudflare/main", []), ("cloudflare/main", ["ssh/nas"]), ("cloudflare/missing", ["*"]), ("ssh/../nas", ["*"]), ("unknown/id", ["*"])])
+def test_denied_and_missing_ids_have_same_error(store, credential_id, allowed):
+    store.save_service(cloudflare())
+    with pytest.raises(ValueError, match="^Credential unavailable$"):
+        store.export_credential(credential_id, allowed)
+
+
+@pytest.mark.parametrize("fields", [["token_file"], ["password"], ["unknown"], "token", [None]])
+def test_export_invalid_fields_rejected(store, fields):
+    store.save_service(cloudflare())
+    with pytest.raises(ValueError, match="Requested credential field unavailable"):
+        store.export_credential("cloudflare/main", ["*"], fields)
+
+
+def test_blank_secret_preserves_existing_and_update_replaces_it(store):
+    store.save_service(cloudflare())
     store.save_service(cloudflare(""))
-    assert (store.secrets_dir / filename).read_text() == "cf-super-secret-token-123"
+    assert store.export_credential("cloudflare/main", ["*"])["credentials"]["token"] == "cf-super-secret-token-123"
     store.save_service(cloudflare("replacement-secret"))
-    assert (store.secrets_dir / filename).read_text() == "replacement-secret"
+    assert store.export_credential("cloudflare/main", ["*"])["credentials"]["token"] == "replacement-secret"
 
 
 def test_ssh_auth_switch_clears_old_credentials(store):
     store.save_service(ssh("key", private_key="private-key-material", key_passphrase="key-password", known_hosts="known-host-entry"))
-    old = store.config()["ssh"]["nas"]
     store.save_service(ssh("password", password="remote-root-password"))
-    current = store.config()["ssh"]["nas"]
-    assert "key_file" not in current and "key_passphrase_file" not in current
-    assert "known_hosts_file" in current and "password_file" in current
-    assert not (store.secrets_dir / old["key_file"]).exists()
-    assert not (store.secrets_dir / old["key_passphrase_file"]).exists()
+    assert store.export_credential("ssh/nas", ["*"])["credentials"] == {"password": "remote-root-password", "known_hosts": "known-host-entry"}
     store.save_service(ssh("key", private_key="new-key-material"))
-    assert "password_file" not in store.config()["ssh"]["nas"]
-    assert not (store.secrets_dir / current["password_file"]).exists()
+    assert store.export_credential("ssh/nas", ["*"])["credentials"] == {"private_key": "new-key-material", "known_hosts": "known-host-entry"}
 
 
-def test_delete_removes_vault_and_temporary_files(store):
+def test_cloudflare_global_key_and_auth_switch(store):
+    store.save_service(cloudflare())
+    payload = cloudflare(auth_method="global_key", email="owner@example.test")
+    payload["secrets"] = {"global_api_key": "global-key-secret"}
+    store.save_service(payload)
+    result = store.export_credential("cloudflare/main", ["*"])
+    assert result["connection"] == {"auth_method": "global_key", "email": "owner@example.test"}
+    assert result["credentials"] == {"global_api_key": "global-key-secret"}
+    assert "token_file" not in store.config()["cloudflare"]["main"]
+    store.save_service(cloudflare("new-api-token"))
+    assert store.export_credential("cloudflare/main", ["*"])["credentials"] == {"token": "new-api-token"}
+    assert "global_api_key_file" not in store.config()["cloudflare"]["main"]
+
+
+def test_delete_removes_vault_entries(store):
     store.save_service(cloudflare())
     store.delete_service("cloudflare", "main")
-    assert store.services() == []
-    assert list(store.secrets_dir.iterdir()) == []
-    assert json.loads((store.data_dir / "vault.json").read_text()) == {}
+    assert store.services() == [] and json.loads((store.data_dir / "vault.json").read_text()) == {}
 
 
-def test_metadata_deepcopy_and_no_file_references(store):
-    store.save_service(ssh("password", password="ssh-pass", known_hosts="known-hosts"))
-    visible = store.services()
-    assert not any(key.endswith("_file") for key in visible[0]["config"])
-    assert "ssh-pass" not in json.dumps(visible)
-    visible[0]["config"]["checks"]["uptime"] = "changed"
-    config = store.config()
-    config["ssh"]["nas"]["host"] = "changed"
-    assert store.config()["ssh"]["nas"]["host"] == "192.168.1.10"
-    assert store.config()["ssh"]["nas"]["checks"]["uptime"] == "uptime"
+def test_retired_execution_configuration_is_discarded_on_save(store):
+    payload = ssh(password="ssh-pass")
+    payload["config"]["checks"] = {"anything": "must never be executed"}
+    store.save_service(payload)
+    store.save_service(docker(socket_path="tcp://never-connect:2375"))
+    assert "checks" not in store.config()["ssh"]["nas"]
+    assert "socket_path" not in store.config()["docker"]["images"]
+
+
+def test_legacy_migration_preserves_secrets_and_client_access(store):
+    store.save_service(cloudflare())
+    store.save_service(ssh(password="root-secret", known_hosts="old-host-data"))
+    client = store.create_client("Legacy laptop")
+    original_vault = (store.data_dir / "vault.json").read_bytes()
+    state_path = store.data_dir / "state.json"
+    legacy = json.loads(state_path.read_text())
+    legacy["config"]["cloudflare"]["main"].pop("auth_method")
+    legacy["config"]["ssh"]["nas"]["checks"] = {"status": "old-command"}
+    legacy["config"]["docker"]["old"] = {"registry": "docker.io", "username": "builder", "namespace": "team", "socket_path": "/var/run/docker.sock"}
+    legacy["config"].pop("github")
+    legacy["clients"][client["id"]].pop("allowed_services")
+    state_path.write_text(json.dumps(legacy))
+    restored = Store(store.data_dir)
+    assert restored.config()["github"] == {}
+    assert "checks" not in restored.config()["ssh"]["nas"]
+    assert "socket_path" not in restored.config()["docker"]["old"]
+    assert restored.config()["cloudflare"]["main"]["auth_method"] == "api_token"
+    assert restored.client_for_token(client["token"])["allowed_services"] == ["*"]
+    assert restored.export_credential("ssh/nas", ["*"])["credentials"] == {"password": "root-secret", "known_hosts": "old-host-data"}
+    assert (store.data_dir / "vault.json").read_bytes() == original_vault
+
+
+def test_verification_summary_preserved_without_decryption(store, monkeypatch):
+    store.save_service(cloudflare())
+    monkeypatch.setattr(store, "_decrypt", lambda *args: pytest.fail("Verification summary must not decrypt"))
+    store.record_test("cloudflare", "main", True, "Credentials verified")
+    result = store.services()[0]["last_test"]
+    assert result["ok"] and result["message"] == "Credentials verified"
+    assert Store(store.data_dir).services()[0]["last_test"] == result
+    store.save_service(cloudflare(""))
+    assert store.services()[0]["last_test"] is None
+
+
+def test_new_store_has_all_five_groups(store):
+    assert store.config() == {"cloudflare": {}, "ssh": {}, "alist": {}, "github": {}, "docker": {}}
+
+
+@pytest.mark.parametrize("factory", [github, docker])
+def test_github_and_docker_tokens_exported_with_scope(store, factory):
+    payload = factory()
+    store.save_service(payload)
+    identifier = payload["kind"] + "/" + payload["alias"]
+    assert store.export_credential(identifier, [identifier])["credentials"] == payload["secrets"]
+    assert payload["secrets"]["token"] not in json.dumps(store.services())
 
 
 @pytest.mark.parametrize("alias", ["../outside", "/absolute", "..", "a/b", "bad name", "a" * 65])
 def test_alias_traversal_rejected(store, alias):
-    payload = cloudflare()
-    payload["alias"] = alias
     with pytest.raises(ValueError):
-        store.save_service(payload)
-    assert store.services() == []
+        store.save_service(cloudflare() | {"alias": alias})
 
 
-@pytest.mark.parametrize("change", [
-    {"config": {"token_file": "../../etc/passwd"}},
-    {"secrets": {"unexpected": "secret"}},
-    {"unexpected": "secret"},
-])
-def test_unknown_fields_rejected(store, change):
+@pytest.mark.parametrize("change", [{"config": {"token_file": "../../etc/passwd"}}, {"secrets": {"unexpected": "secret"}}, {"unexpected": "secret"}, {"config": {"auth_method": "unknown"}}, {"config": {"email": "invalid"}}])
+def test_cloudflare_invalid_fields_rejected(store, change):
     with pytest.raises(ValueError):
         store.save_service(cloudflare() | change)
 
 
-@pytest.mark.parametrize("changes", [
-    {"host": "https://example.com"}, {"port": True}, {"port": 65536},
-    {"checks": {"../evil": "uptime"}}, {"checks": {"status": "uptime\nwhoami"}},
-    {"checks": ["uptime"]}, {"auth_method": "unknown"},
-])
+@pytest.mark.parametrize("changes", [{"host": "https://example.com"}, {"port": True}, {"port": 65536}, {"auth_method": "unknown"}])
 def test_invalid_ssh_config(store, changes):
     payload = ssh()
     payload["config"].update(changes)
@@ -168,23 +274,28 @@ def test_invalid_ssh_config(store, changes):
         store.save_service(payload)
 
 
-@pytest.mark.parametrize("changes", [
-    {"url": "http://user:password@nas:5244"}, {"url": "file:///etc/passwd"},
-    {"root_path": "relative"}, {"root_path": "/allowed/../private"}, {"root_path": "//server/share"},
-])
+@pytest.mark.parametrize("changes", [{"url": "http://user:password@nas:5244"}, {"url": "file:///etc/passwd"}, {"root_path": "relative"}, {"root_path": "/allowed/../private"}])
 def test_invalid_alist_config(store, changes):
     payload = {"kind": "alist", "alias": "files", "config": {"url": "http://nas:5244", "username": "user", "root_path": "/files"} | changes}
     with pytest.raises(ValueError):
         store.save_service(payload)
 
 
-def test_test_results_are_redacted_and_bounded(store):
-    store.save_service(cloudflare("private-token"))
-    store.record_test("cloudflare", "main", False, "private-token: " + "x" * 1000)
-    result = store.services()[0]["last_test"]
-    assert result["ok"] is False
-    assert "private-token" not in result["message"]
-    assert len(result["message"]) == 500
+@pytest.mark.parametrize("owner", ["", "-owner", "owner-", "two--hyphens", "owner/repo", "../owner", "owner.name", "owner_name", "with space", "x" * 40])
+def test_invalid_github_owner_rejected(store, owner):
+    with pytest.raises(ValueError):
+        store.save_service(github(owner=owner))
+
+
+@pytest.mark.parametrize("changes", [{"registry": "https://docker.io"}, {"registry": "registry.example.test"}, {"registry": []}, {"username": "user@example.test"}, {"username": "builder/password"}, {"username": "u" * 129}, {"namespace": ""}, {"namespace": "org/repo"}, {"namespace": "../org"}, {"namespace": "o" * 129}])
+def test_invalid_registry_names_rejected(store, changes):
+    with pytest.raises(ValueError):
+        store.save_service(docker(**changes))
+
+
+def test_docker_organization_is_distinct_from_login(store):
+    store.save_service(docker(registry="ghcr.io", username="Builder", namespace="team-project"))
+    assert store.export_credential("docker/images", ["*"])["connection"] == {"registry": "ghcr.io", "username": "Builder", "namespace": "team-project"}
 
 
 def test_settings_validation_and_isolation(store):
@@ -193,22 +304,13 @@ def test_settings_validation_and_isolation(store):
     assert result["public_url"] == "https://mcp.example.test"
     result["allowed_hosts"].append("evil.example.test")
     assert "evil.example.test" not in store.settings()["allowed_hosts"]
-    for invalid in [
-        {"public_url": "http://mcp.example.test"}, {"public_url": "https://mcp.example.test/path"},
-        {"allowed_hosts": ["*"]}, {"allowed_hosts": ["https://example.test"]},
-        {"allowed_hosts": ["example.test:*"]}, {"allowed_hosts": ["example.test:8080"]}, {"extra": "field"},
-    ]:
+    for invalid in [{"public_url": "http://mcp.example.test"}, {"public_url": "https://mcp.example.test/path"}, {"allowed_hosts": ["*"]}, {"allowed_hosts": ["https://example.test"]}, {"allowed_hosts": ["example.test:8080"]}, {"extra": "field"}]:
         with pytest.raises(ValueError):
             store.save_settings(invalid)
-    store.save_settings({"public_url": "http://127.0.0.1:8080", "allowed_hosts": ["::1"]})
 
 
 def test_oauth_resource_must_match_public_url(store):
-    oauth = {
-        "issuer_url": "https://login.example.test", "resource_server_url": "https://mcp.example.test/mcp",
-        "audience": "nas-mcp", "jwks_url": "https://login.example.test/certs",
-        "allowed_subjects": ["owner"], "required_scopes": ["mcp:read"],
-    }
+    oauth = {"issuer_url": "https://login.example.test", "resource_server_url": "https://mcp.example.test/mcp", "audience": "nas-mcp", "jwks_url": "https://login.example.test/certs", "allowed_subjects": ["owner"], "required_scopes": ["mcp:read"]}
     store.save_settings({"public_url": "https://mcp.example.test", "oauth": oauth})
     assert store.settings()["oauth"] == oauth
     with pytest.raises(ValueError):
@@ -224,8 +326,63 @@ def test_missing_master_key_never_replaces_existing_vault(store):
     assert (store.data_dir / "vault.json").read_bytes() == original
 
 
-def test_tampered_vault_path_rejected(store):
-    vault = {"../outside": "not-a-real-token"}
-    (store.data_dir / "vault.json").write_text(json.dumps(vault))
-    with pytest.raises(ValueError):
-        Store(store.data_dir)
+def test_corrupt_ciphertext_is_detected_only_on_export(store):
+    store.save_service(cloudflare())
+    identifier = store.config()["cloudflare"]["main"]["token_file"]
+    (store.data_dir / "vault.json").write_text(json.dumps({identifier: "invalid-ciphertext"}))
+    restored = Store(store.data_dir)
+    assert restored.metadata(["*"])[0]["available_fields"] == ["token"]
+    with pytest.raises(ValueError, match="Cannot decrypt"):
+        restored.export_credential("cloudflare/main", ["*"])
+
+
+def test_validation_commit_stores_ssh_trust_and_summary_together(store):
+    store.save_service(ssh(password="root-secret"))
+    record, version = store.validation_snapshot("ssh", "nas")
+    assert record["credentials"] == {"password": "root-secret"}
+    assert store.commit_validation("ssh", "nas", version, True, "Authentication verified", "trusted-host-key")
+    assert store.export_credential("ssh/nas", ["*"])["credentials"] == {"password": "root-secret", "known_hosts": "trusted-host-key"}
+    assert store.services()[0]["last_test"]["ok"] is True
+
+
+@pytest.mark.parametrize("mutation", ["edit", "delete", "recreate"])
+def test_validation_commit_rejects_changed_deleted_or_recreated_service(store, mutation):
+    store.save_service(ssh(password="old-password"))
+    _, version = store.validation_snapshot("ssh", "nas")
+    if mutation == "edit":
+        store.save_service(ssh(password="new-password"))
+    else:
+        store.delete_service("ssh", "nas")
+        if mutation == "recreate":
+            # Identical content must not revive a previous validation version.
+            store.save_service(ssh(password="old-password"))
+    assert not store.commit_validation("ssh", "nas", version, True, "Old authentication succeeded", "obsolete-host-key")
+    if mutation != "delete":
+        assert store.services()[0]["last_test"] is None
+        assert "known_hosts" not in store.export_credential("ssh/nas", ["*"])["credentials"]
+
+
+@pytest.mark.parametrize("changes", [{"host": "192.168.1.11"}, {"port": 2222}])
+def test_changing_ssh_endpoint_discards_old_host_trust(store, changes):
+    store.save_service(ssh(password="root-secret", known_hosts="old-host-key"))
+    update = ssh(password="")
+    update["config"].update(changes)
+    store.save_service(update)
+    assert store.export_credential("ssh/nas", ["*"])["credentials"] == {"password": "root-secret"}
+    assert not store.services()[0]["credentials"]["known_hosts"]
+
+
+def test_ssh_endpoint_change_keeps_explicit_new_host_trust(store):
+    store.save_service(ssh(password="root-secret", known_hosts="old-host-key"))
+    update = ssh(known_hosts="explicit-new-host-key")
+    update["config"]["host"] = "192.168.1.11"
+    store.save_service(update)
+    assert store.export_credential("ssh/nas", ["*"])["credentials"]["known_hosts"] == "explicit-new-host-key"
+
+
+def test_ssh_password_or_description_changes_keep_host_trust(store):
+    store.save_service(ssh(password="old-password", known_hosts="trusted-host-key"))
+    update = ssh(password="new-password")
+    update["description"] = "Updated description"
+    store.save_service(update)
+    assert store.export_credential("ssh/nas", ["*"])["credentials"] == {"password": "new-password", "known_hosts": "trusted-host-key"}

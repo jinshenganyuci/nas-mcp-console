@@ -1,7 +1,7 @@
 services:
   nas-mcp:
     build: .
-    image: private-nas-mcp:0.1.0
+    image: private-nas-mcp:0.2.0
     restart: unless-stopped
     init: true
     user: "${PUID:-1000}:${PGID:-1000}"

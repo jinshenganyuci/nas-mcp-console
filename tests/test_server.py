@@ -1,4 +1,6 @@
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -78,17 +80,17 @@ def test_real_mcp_initialize_list_call_and_revoke(web):
     init = rpc(client, token, "initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
         "clientInfo": {"name": "integration-test", "version": "1"}})
     assert init.status_code == 200, init.text
-    assert init.json()["result"]["serverInfo"]["name"] == "私人 NAS"
+    assert init.json()["result"]["serverInfo"]["name"] == "私人凭据库"
     result = rpc(client, token, "tools/list")
     assert result.status_code == 200, result.text
     names = {tool["name"] for tool in result.json()["result"]["tools"]}
-    assert names == {"list_services", "cloudflare_list_zones", "cloudflare_list_dns", "ssh_run_check", "alist_list_files"}
-    result = rpc(client, token, "tools/call", {"name": "list_services", "arguments": {}})
+    assert names == {"list_credentials", "get_credentials"}
+    result = rpc(client, token, "tools/call", {"name": "list_credentials", "arguments": {}})
     assert result.status_code == 200, result.text
     payload = result.json()["result"]
     assert payload.get("isError") is not True, payload
     content = payload.get("structuredContent") or json.loads(payload["content"][0]["text"])
-    assert content == {"cloudflare": [], "ssh": [], "alist": []}
+    assert content == {"credentials": [], "count": 0}
     # Streamable HTTP GET must not hang this stateless implementation.
     assert client.get("/mcp", headers={"Authorization": "Bearer " + token}).status_code == 405
     assert client.delete("/api/clients/" + credential["id"], headers=headers).status_code == 200
@@ -108,3 +110,93 @@ def test_login_throttle(web):
     for _ in range(5):
         assert client.post("/api/login", json={"password": "wrong"}).status_code == 401
     assert client.post("/api/login", json={"password": "wrong"}).status_code == 429
+
+
+def tool_result(client, token, name, arguments):
+    response = rpc(client, token, "tools/call", {"name": name, "arguments": arguments})
+    assert response.status_code == 200, response.text
+    result = response.json()["result"]
+    return result, result.get("structuredContent") or json.loads(result["content"][0]["text"]) if not result.get("isError") else None
+
+
+def test_credentials_are_returned_only_within_device_scope(web):
+    client, _, _ = web
+    headers = login(web)
+    for alias in ("home", "work"):
+        saved = client.post("/api/services", headers=headers, json={"kind": "ssh", "alias": alias,
+            "description": alias + " server", "config": {"host": "192.0.2.10", "port": 22,
+            "username": "root", "auth_method": "password"}, "secrets": {"password": "fake-secret-" + alias}})
+        assert saved.status_code == 200, saved.text
+    created = client.post("/api/clients", headers=headers, json={"name": "home-only", "allowed_services": ["ssh/home"]})
+    assert created.status_code == 200, created.text
+    token = created.json()["token"]
+    result, values = tool_result(client, token, "list_credentials", {})
+    assert values["count"] == 1
+    assert values["credentials"][0]["id"] == "ssh/home"
+    assert "fake-secret" not in json.dumps(result)
+    _, values = tool_result(client, token, "get_credentials", {"credential_id": "ssh/home", "fields": ["password"]})
+    assert values["connection"]["username"] == "root"
+    assert values["credentials"] == {"password": "fake-secret-home"}
+    forbidden = rpc(client, token, "tools/call", {"name": "get_credentials", "arguments": {"credential_id": "ssh/work"}}).json()["result"]
+    assert forbidden["isError"] is True
+    assert "fake-secret-work" not in json.dumps(forbidden)
+    # Search cannot reveal another device's service metadata either.
+    _, values = tool_result(client, token, "list_credentials", {"query": "work"})
+    assert values["count"] == 0
+
+
+def test_validation_is_admin_only_and_not_an_mcp_tool(web, monkeypatch):
+    client, _, _ = web
+    headers = login(web)
+    client.post("/api/services", headers=headers, json={"kind": "github", "alias": "personal",
+        "description": "GitHub", "config": {"owner": "example-user"}, "secrets": {"token": "fake-github-token"}})
+    def validator(record, trust):
+        assert record["credentials"]["token"] == "fake-github-token"
+        return {"ok": True, "message": "认证有效。"}
+    monkeypatch.setattr("app.server.validate_credential", validator)
+    tested = client.post("/api/services/github/personal/test", headers=headers, json={})
+    assert tested.status_code == 200
+    assert tested.json()["ok"] is True
+    credential = client.post("/api/clients", headers=headers, json={"name": "test"}).json()
+    client.cookies.clear()
+    assert client.post("/api/services/github/personal/test", headers={"Authorization": "Bearer " + credential["token"]}, json={}).status_code == 401
+
+
+@pytest.mark.parametrize("mutation", ["edit", "delete", "recreate"])
+def test_in_flight_validation_cannot_commit_to_changed_service(web, monkeypatch, mutation):
+    client, _, _ = web
+    headers = login(web)
+    original = {"kind": "ssh", "alias": "nas", "description": "NAS",
+        "config": {"host": "192.0.2.10", "port": 22, "username": "root", "auth_method": "password"},
+        "secrets": {"password": "old-test-password"}}
+    assert client.post("/api/services", headers=headers, json=original).status_code == 200
+    started, finish = threading.Event(), threading.Event()
+    def validator(record, trust):
+        assert record["credentials"]["password"] == "old-test-password"
+        started.set()
+        assert finish.wait(5), "Test did not release mocked verification"
+        return {"ok": True, "message": "Old authentication succeeded", "verified_known_hosts": "old-host-key"}
+    monkeypatch.setattr("app.server.validate_credential", validator)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(client.post, "/api/services/ssh/nas/test", headers=headers, json={})
+        try:
+            assert started.wait(5), "Verification did not start"
+            if mutation == "edit":
+                update = {**original, "secrets": {"password": "new-test-password"}}
+                assert client.post("/api/services", headers=headers, json=update).status_code == 200
+            else:
+                assert client.delete("/api/services/ssh/nas", headers=headers).status_code == 200
+                if mutation == "recreate":
+                    assert client.post("/api/services", headers=headers, json=original).status_code == 200
+        finally:
+            finish.set()
+        response = future.result(timeout=5)
+    assert response.status_code == 409
+    assert response.json()["stale"] is True
+    assert "old-host-key" not in response.text and "old-test-password" not in response.text
+    rows = client.get("/api/services").json()["services"]
+    if mutation == "delete":
+        assert rows == []
+    else:
+        assert rows[0]["last_test"] is None
+        assert rows[0]["credentials"]["known_hosts"] is False
