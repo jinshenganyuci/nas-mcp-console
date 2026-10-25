@@ -4,6 +4,12 @@ on:
     branches: [main]
   pull_request:
   workflow_call:
+  workflow_dispatch:
+    inputs:
+      check_published_compose:
+        description: 'Test the published image with the current NAS bind-mount Compose'
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -23,3 +29,9 @@ jobs:
       - run: node --check app/static/admin.js
       - run: docker compose config --quiet
       - run: docker compose -f compose.fnos.yaml config --quiet
+      - name: Verify published image with bind-mount Compose
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.check_published_compose }}
+        run: |
+          image="$(docker compose -f compose.fnos.yaml config --format json | python -c 'import json, sys; print(json.load(sys.stdin)["services"]["nas-mcp"]["image"])')"
+          docker pull "$image"
+          sh tests/container-smoke.sh "$image"

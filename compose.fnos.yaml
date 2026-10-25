@@ -1,36 +1,55 @@
-services:
-  nas-mcp:
-    image: "${MCP_IMAGE:-docker.io/jinshenganyuci/nas-mcp-console:0.2.0}"
-    restart: unless-stopped
-    init: true
-    user: "1000:1000"
-    ports:
-      - "${BIND_ADDRESS:-0.0.0.0}:${MCP_PORT:-8090}:8090"
-    environment:
-      NAS_MCP_DATA: /data
-      NAS_MCP_ALLOWED_HOSTS: "${ALLOWED_HOSTS:-}"
-    volumes:
-      - nas-mcp-data:/data
-    read_only: true
-    tmpfs:
-      - /tmp:size=32m,mode=1777
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=3)"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-    pids_limit: 128
-    mem_limit: 512m
-    logging:
-      driver: json-file
-      options:
-        max-size: 5m
-        max-file: "2"
+# 首次部署：在本文件旁创建 data 文件夹，确保其所有者与下面 user 一致。
+# 已经使用旧命名卷时，先停止旧容器，把原卷完整数据复制到 ./data，再启动。
 
-volumes:
-  nas-mcp-data:
-    name: "${MCP_DATA_VOLUME:-nas-mcp-data}"
+services: # 此 Compose 项目包含的服务
+  nas-mcp: # 服务名称，在飞牛中用于识别此应用
+    # 拉取已发布镜像；升级时修改末尾版本号即可
+    image: docker.io/jinshenganyuci/nas-mcp-console:0.2.0
+
+    # NAS 或 Docker 重启后自动恢复；手动停止后保持停止
+    restart: unless-stopped
+
+    # 添加轻量初始化进程，转发退出信号并回收子进程
+    init: true
+
+    # 容器运行用户：UID:GID，必须与 ./data 文件夹的所有者匹配
+    user: "1000:1000"
+
+    ports: # 端口映射，格式为「NAS 端口:容器端口」
+      - "8090:8090" # 想改访问端口只改左边，例如 "18090:8090"
+
+    environment: # 传给程序的设置
+      NAS_MCP_DATA: /data # 程序在容器内保存凭据与配置的位置
+      # 额外允许访问的域名，多个用逗号分隔；内网 IP 访问可留空，也能在后台设置
+      NAS_MCP_ALLOWED_HOSTS: ""
+
+    volumes: # 把 NAS 文件夹映射到容器，实现数据持久化
+      - ./data:/data # ./data 是本 Compose 文件旁的 data 文件夹
+
+    # 应用程序目录只读；上面的 /data 和下面的 /tmp 仍然可写
+    read_only: true
+
+    tmpfs: # 临时文件放在内存中，不随容器持久保存
+      - /tmp:size=32m,mode=1777 # 最多 32 MB；1777 允许写入并保护其他用户的文件
+
+    cap_drop: # 移除容器不需要的额外 Linux 权限
+      - ALL # 移除全部额外权限
+
+    security_opt: # 容器进程的权限限制
+      - no-new-privileges:true # 阻止进程通过执行其他程序获得更高权限
+
+    healthcheck: # 检查服务是否能正常响应，结果显示在容器状态中
+      # 在容器内访问健康检查接口；不会读取或测试你的外部账号
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=3)"]
+      interval: 30s # 每 30 秒检查一次
+      timeout: 5s # 一次检查最多等待 5 秒
+      retries: 3 # 连续失败 3 次后标记为不健康，不会因此自动重启
+
+    pids_limit: 128 # 限制容器内进程与线程总数，避免占满 NAS 资源
+    mem_limit: 512m # 容器最多使用 512 MB 内存
+
+    logging: # Docker 容器日志设置
+      driver: json-file # 使用 Docker 默认 JSON 文件日志，飞牛可查看
+      options: # 日志轮转参数
+        max-size: 5m # 单个日志文件最多 5 MB
+        max-file: "2" # 最多保留 2 个日志文件，避免长期占满磁盘
