@@ -4,7 +4,8 @@
   const $ = (selector, root = document) => root.querySelector(selector);
   const demo = new URLSearchParams(location.search).get('demo') === '1';
   const state = { session: null, services: [], clients: [], oauthGrants: [], settings: {}, view: 'services' };
-  const kinds = { cloudflare: 'Cloudflare', ssh: 'SSH', alist: 'Alist', github: 'GitHub', docker: '镜像仓库' };
+  const kinds = { cloudflare: 'Cloudflare', ssh: 'SSH', windows: 'Windows', alist: 'Alist', github: 'GitHub', docker: '镜像仓库' };
+  const windowsProtocols = { rdp: { label: '远程桌面（RDP）', port: 3389 }, winrm_http: { label: 'WinRM（HTTP）', port: 5985 }, winrm_https: { label: 'WinRM（HTTPS）', port: 5986 } };
   const content = $('#content');
   const modal = $('#modal');
 
@@ -171,9 +172,9 @@
     return node('div', { class: 'meta-row' }, node('span', {}, label), node('strong', {}, value || '未设置'));
   }
 
-  function sshAddress(host, port) {
+  function connectionAddress(host, port, defaultPort = 22) {
     if (!host) return '未设置';
-    return `${host.includes(':') ? `[${host}]` : host}:${port || 22}`;
+    return `${host.includes(':') ? `[${host}]` : host}:${port || defaultPort}`;
   }
 
   function renderServices() {
@@ -181,6 +182,7 @@
     content.append(node('div', { class: 'quick-add-services', 'aria-label': '按类型添加凭据' },
       button('＋ 添加 Cloudflare', () => serviceDialog(null, 'cloudflare'), 'secondary'),
       button('＋ 添加 SSH', () => serviceDialog(null, 'ssh'), 'secondary'),
+      button('＋ 添加 Windows', () => serviceDialog(null, 'windows'), 'secondary'),
       button('＋ 添加 Alist', () => serviceDialog(null, 'alist'), 'secondary'),
       button('＋ 添加 GitHub', () => serviceDialog(null, 'github'), 'secondary'),
       button('＋ 添加 Docker', () => serviceDialog(null, 'docker'), 'secondary'),
@@ -192,7 +194,7 @@
       stat('已授权客户端', state.clients.length + state.oauthGrants.filter(grant => !grantExpired(grant)).length, '按范围读取，随时撤销'),
     ));
     content.append(node('div', { class: 'notice info credential-disclosure' }, node('strong', {}, 'MCP 会返回所选凭据'), node('span', {}, '客户端调用 get_credentials 时，选中的账号、密码或密钥值会返回给该调用客户端。请在「客户端授权」中设置可读取范围。')));
-    content.append(node('div', { class: 'section-heading' }, node('div', {}, node('h2', {}, '已保存的凭据'), node('p', {}, 'Cloudflare、SSH、Alist、GitHub 与镜像仓库')), node('span', { class: 'badge neutral' }, `${state.services.length} 个条目`)));
+    content.append(node('div', { class: 'section-heading' }, node('div', {}, node('h2', {}, '已保存的凭据'), node('p', {}, 'Cloudflare、SSH、Windows、Alist、GitHub 与镜像仓库')), node('span', { class: 'badge neutral' }, `${state.services.length} 个条目`)));
     if (!state.services.length) {
       content.append(node('div', { class: 'empty-state' }, node('div', { class: 'empty-icon', 'aria-hidden': 'true' }, '＋'), node('h3', {}, '添加你的第一条凭据'), node('p', {}, '保存服务地址、账号与密码或密钥，之后按名称读取。'), button('添加凭据', () => serviceDialog(), 'primary')));
       return;
@@ -202,9 +204,11 @@
       const cfg = service.config || {};
       const creds = service.credentials || {};
       const verification = service.last_test;
-      const validationText = !verification ? '尚未验证' : verification.needs_host_trust ? '等待核对主机指纹' : `${verification.ok ? '最近验证通过' : '最近验证未通过'} · ${prettyDate(verification.at)}`;
+      const validationText = service.kind === 'windows'
+        ? (!verification ? '尚未测试端口' : `${verification.ok ? '最近内网端口可达' : '最近内网端口未连通'} · ${prettyDate(verification.at)}`)
+        : (!verification ? '尚未验证' : verification.needs_host_trust ? '等待核对主机指纹' : `${verification.ok ? '最近验证通过' : '最近验证未通过'} · ${prettyDate(verification.at)}`);
       const hasSecret = Object.values(creds).some(Boolean);
-      const icon = { cloudflare: 'CF', ssh: '>_', alist: 'A', github: 'GH', docker: 'DK' }[service.kind] || '·';
+      const icon = { cloudflare: 'CF', ssh: '>_', windows: 'W', alist: 'A', github: 'GH', docker: 'DK' }[service.kind] || '·';
       const title = service.kind === 'docker' ? (cfg.registry === 'ghcr.io' ? 'GHCR 凭据' : 'Docker Hub 凭据') : (kinds[service.kind] || service.kind);
       const details = node('div', { class: 'service-meta' });
       if (service.kind === 'cloudflare') {
@@ -213,9 +217,16 @@
         } else details.append(meta('凭据类型', 'API Token'), meta('Token', creds.token ? '已保存' : '未填写'));
       } else if (service.kind === 'ssh') {
         const authMethod = cfg.auth_method || (creds.private_key ? 'key' : 'password');
-        details.append(meta('内网（默认）', sshAddress(cfg.host, cfg.port)));
-        if (cfg.external_host) details.append(meta('外网', sshAddress(cfg.external_host, cfg.external_port)));
+        details.append(meta('内网（默认）', connectionAddress(cfg.host, cfg.port)));
+        if (cfg.external_host) details.append(meta('外网', connectionAddress(cfg.external_host, cfg.external_port)));
         details.append(meta('用户名', cfg.username), meta('凭据类型', authMethod === 'key' ? 'SSH 私钥' : '账号密码'), meta(authMethod === 'key' ? '私钥' : '密码', (authMethod === 'key' ? creds.private_key : creds.password) ? '已保存' : '未填写'));
+      } else if (service.kind === 'windows') {
+        const protocol = windowsProtocols[cfg.protocol || 'rdp'];
+        details.append(meta('连接方式', protocol?.label || cfg.protocol), meta('内网（默认）', connectionAddress(cfg.host, cfg.port, protocol?.port || 3389)));
+        if (cfg.external_host) details.append(meta('外网', connectionAddress(cfg.external_host, cfg.external_port, protocol?.port || 3389)));
+        details.append(meta('用户名', cfg.username));
+        if (cfg.domain) details.append(meta('域 / 计算机名', cfg.domain));
+        details.append(meta('登录密码', creds.password ? '已保存' : '未填写'));
       } else if (service.kind === 'alist') {
         details.append(meta('服务地址', cfg.url), meta('用户名', cfg.username), meta('登录密码', creds.password ? '已保存' : '未填写'));
       } else if (service.kind === 'github') {
@@ -226,13 +237,13 @@
       grid.append(node('article', { class: 'service-card' },
         node('div', { class: 'service-head' }, node('span', { class: `service-icon ${service.kind}`, 'aria-hidden': 'true' }, icon), node('div', { class: 'service-title' }, node('h3', {}, service.alias), node('span', { class: 'service-alias' }, title)), node('span', { class: `badge ${hasSecret ? 'success' : 'neutral'}` }, hasSecret ? '已保存凭据' : '仅基本信息')),
         node('p', { class: 'service-description' }, service.description || '私人凭据条目'), details,
-        node('div', { class: 'service-foot' }, node('div', { class: 'credential-status' }, node('span', { class: 'credential-note' }, `${service.kind}/${service.alias}`), node('span', { class: `verification-note ${verification?.ok ? 'success' : verification ? 'pending' : ''}`, title: verification?.message || '' }, validationText)), node('div', { class: 'card-actions' }, button(service.kind === 'ssh' ? '测试内网' : '测试凭据', event => {
+        node('div', { class: 'service-foot' }, node('div', { class: 'credential-status' }, node('span', { class: 'credential-note' }, `${service.kind}/${service.alias}`), node('span', { class: `verification-note ${verification?.ok ? 'success' : verification ? 'pending' : ''}`, title: verification?.message || '' }, validationText)), node('div', { class: 'card-actions' }, button(service.kind === 'windows' ? '测试内网端口' : service.kind === 'ssh' ? '测试内网' : '测试凭据', event => {
           if (demo) return demoNotice();
           busy(event.currentTarget, () => testCredential(service));
         }, 'secondary small'), button('编辑', () => serviceDialog(service), 'ghost small'), button('删除', () => deleteService(service), 'ghost danger small'))),
       ));
     }
-    content.append(grid, node('p', { class: 'hint validation-hint' }, '后台测试仅验证认证是否可用，不保证所有业务权限。SSH 仅测试内网地址；外网地址用于客户端按需连接。MCP 仅提供凭据列表和读取。'), node('div', { class: 'notice info connection-tip' }, node('strong', {}, '按客户端设置读取范围'), node('span', {}, '可授权全部凭据，也可以只授权指定的条目。'), button('管理授权 →', () => setView('clients'), 'ghost small')));
+    content.append(grid, node('p', { class: 'hint validation-hint' }, 'Windows 仅测试内网 TCP 端口是否可达，不验证账号密码或登录权限；其他类型测试认证是否可用，不保证所有业务权限。SSH 也仅测试内网。外网地址供客户端按需连接，MCP 仅提供凭据列表和读取。'), node('div', { class: 'notice info connection-tip' }, node('strong', {}, '按客户端设置读取范围'), node('span', {}, '可授权全部凭据，也可以只授权指定的条目。'), button('管理授权 →', () => setView('clients'), 'ghost small')));
   }
 
   async function testCredential(service, body = {}) {
@@ -251,14 +262,16 @@
       }, 'primary');
       openModal('核对 SSH 主机指纹', node('div', {},
         node('p', {}, result.message || '首次验证这台服务器，需要先核对其 SSH 主机指纹。'),
-        meta('内网服务器', sshAddress(service.config?.host || service.alias, service.config?.port)),
+        meta('内网服务器', connectionAddress(service.config?.host || service.alias, service.config?.port)),
         meta('公钥类型', result.key_type || 'SSH'),
         node('pre', { class: 'code-block fingerprint-value' }, fingerprint),
         node('p', { class: 'hint' }, '请通过 NAS 本机控制台或其他可信渠道核对以上指纹。确认一致后，点击按钮保存信任并继续验证登录凭据。'),
       ), [button('取消', () => modal.close()), confirm]);
       return false;
     }
-    toast(`${result.message || (result.ok ? '凭据验证通过。' : '凭据验证未通过。')} 仅验证认证可用，不保证全部业务权限。`, result.ok ? 'success' : 'error');
+    const fallbackMessage = service.kind === 'windows' ? (result.ok ? '内网端口可达。' : '内网端口未连通。') : (result.ok ? '凭据验证通过。' : '凭据验证未通过。');
+    const testScope = service.kind === 'windows' ? '仅测试 TCP 端口，不验证账号密码或 Windows 登录权限。' : '仅验证认证可用，不保证全部业务权限。';
+    toast(`${result.message || fallbackMessage} ${testScope}`, result.ok ? 'success' : 'error');
     return true;
   }
 
@@ -292,7 +305,7 @@
     const typeButtons = [];
     if (!service) {
       const choices = node('div', { class: 'service-type-choices', 'aria-label': '选择凭据类型' });
-      for (const [value, label, detail] of [['cloudflare', 'Cloudflare', 'Token / 总控制密钥'], ['ssh', 'SSH', '密码 / 私钥'], ['alist', 'Alist', '账号密码'], ['github', 'GitHub', '用户名 + PAT'], ['docker', '镜像仓库', 'Docker Hub / GHCR']]) {
+      for (const [value, label, detail] of [['cloudflare', 'Cloudflare', 'Token / 总控制密钥'], ['ssh', 'SSH', '密码 / 私钥'], ['windows', 'Windows', '远程桌面 / WinRM'], ['alist', 'Alist', '账号密码'], ['github', 'GitHub', '用户名 + PAT'], ['docker', '镜像仓库', 'Docker Hub / GHCR']]) {
         const choice = button('', () => { type.value = value; renderFields(); }, 'secondary service-type-choice', { 'aria-pressed': type.value === value ? 'true' : 'false' });
         choice.append(node('strong', {}, label), node('span', {}, detail));
         typeButtons.push([choice, value]);
@@ -310,7 +323,7 @@
         choice.classList.toggle('active', type.value === value);
         choice.setAttribute('aria-pressed', type.value === value ? 'true' : 'false');
       }
-      const sectionTitles = { cloudflare: 'Cloudflare · 账号与密钥', ssh: 'SSH · 地址、账号与凭据', alist: 'Alist · 地址与账号密码', github: 'GitHub · 用户名与访问令牌', docker: '镜像仓库 · 账号与访问令牌' };
+      const sectionTitles = { cloudflare: 'Cloudflare · 账号与密钥', ssh: 'SSH · 地址、账号与凭据', windows: 'Windows · 远程连接与账号密码', alist: 'Alist · 地址与账号密码', github: 'GitHub · 用户名与访问令牌', docker: '镜像仓库 · 账号与访问令牌' };
       dynamic.replaceChildren(node('div', { class: 'section-divider' }, sectionTitles[type.value]));
       const cfg = service?.config || {};
       const creds = service?.credentials || {};
@@ -361,6 +374,50 @@
         controls.auth_method.addEventListener('change', syncAuth);
         syncAuth();
         dynamic.append(keyFields, passwordFields);
+      } else if (type.value === 'windows') {
+        let previousProtocol = cfg.protocol || 'rdp';
+        let externalPortEdited = Boolean(cfg.external_host);
+        const defaultPort = windowsProtocols[previousProtocol].port;
+        controls.protocol = node('select', { name: 'protocol' }, Object.entries(windowsProtocols).map(([value, item]) => node('option', { value }, item.label)));
+        controls.protocol.value = previousProtocol;
+        controls.host = textInput('host', cfg.host || '', { required: true, placeholder: '192.168.1.20 或计算机域名' });
+        controls.port = textInput('port', cfg.port || defaultPort, { type: 'number', min: 1, max: 65535, required: true });
+        controls.external_host = textInput('external_host', cfg.external_host || '', { placeholder: '例如 windows.example.com，留空不配置' });
+        controls.external_port = textInput('external_port', cfg.external_port || defaultPort, { type: 'number', min: 1, max: 65535 });
+        controls.external_port.addEventListener('input', () => { externalPortEdited = true; });
+        const syncExternal = () => {
+          const configured = Boolean(controls.external_host.value.trim());
+          controls.external_port.disabled = !configured;
+          controls.external_port.required = configured;
+        };
+        controls.external_host.addEventListener('input', syncExternal);
+        syncExternal();
+        controls.protocol.addEventListener('change', () => {
+          const oldDefault = windowsProtocols[previousProtocol].port;
+          const newDefault = windowsProtocols[controls.protocol.value].port;
+          if (Number(controls.port.value) === oldDefault) controls.port.value = newDefault;
+          if (!externalPortEdited && Number(controls.external_port.value) === oldDefault) controls.external_port.value = newDefault;
+          previousProtocol = controls.protocol.value;
+        });
+        controls.username = textInput('username', cfg.username || '', { required: true, autocomplete: 'off', placeholder: '例如 Administrator、DOMAIN\\user 或 user@example.com' });
+        controls.domain = textInput('domain', cfg.domain || '', { autocomplete: 'off', placeholder: '例如 CONTOSO 或 DESKTOP-01，通常可留空' });
+        const passwordField = secretInput('Windows 登录密码', 'password', creds.password, false, creds.password
+          ? '已保存的密码不会回显；留空保留，填写新密码替换。请使用账号密码，不是 Windows Hello PIN。'
+          : '填写 Windows 账号的登录密码，不是 Windows Hello PIN。内外网连接共用此密码。');
+        $('input', passwordField).required = !creds.password && !demo;
+        dynamic.append(
+          field('连接方式', controls.protocol, '按目标 Windows 已启用的服务选择。保存凭据不会自动开启远程桌面、WinRM 或端口映射。'),
+          node('div', { class: 'field-grid' }, field('内网地址（默认）', controls.host), field('内网端口', controls.port)),
+          node('fieldset', { class: 'ssh-external-settings' },
+            node('legend', {}, '外网连接（选填）'),
+            node('div', { class: 'field-grid' }, field('外网域名或 IP', controls.external_host), field('外网映射端口', controls.external_port)),
+            node('p', { class: 'hint' }, '默认使用内网；外网填写映射后的地址和端口，共用下方账号密码。地址只填域名或 IP，不带协议或端口。'),
+          ),
+          field('Windows 用户名', controls.username, '支持本地用户名、DOMAIN\\user 或 user@example.com。'),
+          field('域 / 计算机名（选填）', controls.domain, '填写未带前缀的用户名时，可在这里补充域或计算机名；用户名已含 DOMAIN\\ 或 @域名时，此项留空。'),
+          passwordField,
+          node('p', { class: 'hint' }, '保存后可测试内网 TCP 端口是否可达；该测试不验证密码、Windows 身份或登录权限。'),
+        );
       } else if (type.value === 'alist') {
         controls.url = textInput('url', cfg.url || '', { type: 'url', required: true, placeholder: 'http://192.168.1.10:5244' });
         controls.username = textInput('username', cfg.username || '', { required: true, autocomplete: 'off', placeholder: 'Alist 用户名' });
@@ -400,7 +457,7 @@
           let allowedSecrets;
           if (type.value === 'cloudflare') allowedSecrets = config.auth_method === 'global_key' ? ['global_api_key'] : ['token'];
           else if (['github', 'docker'].includes(type.value)) allowedSecrets = ['token'];
-          else if (type.value === 'alist') allowedSecrets = ['password'];
+          else if (['alist', 'windows'].includes(type.value)) allowedSecrets = ['password'];
           else allowedSecrets = config.auth_method === 'key' ? ['private_key', 'key_passphrase'] : ['password'];
           for (const name of allowedSecrets) {
             const input = form.elements.namedItem(name);
@@ -677,6 +734,7 @@
     state.services = [
       { kind: 'cloudflare', alias: 'personal-cloud', description: '个人 Cloudflare 账号总控制密钥', config: { auth_method: 'global_key', email: 'example-user@example.com' }, credentials: { global_api_key: true } },
       { kind: 'ssh', alias: 'home-nas', description: '家里的飞牛 NAS · root 账号密码', config: { host: '192.0.2.10', port: 22, external_host: 'ssh.example.com', external_port: 2222, username: 'root', auth_method: 'password' }, credentials: { password: true } },
+      { kind: 'windows', alias: '工作电脑', description: 'Windows 远程桌面 · 本地账号', config: { protocol: 'rdp', host: '192.0.2.20', port: 3389, external_host: 'windows.example.com', external_port: 13389, username: 'example-user', domain: 'DESKTOP' }, credentials: { password: true } },
       { kind: 'alist', alias: 'family-files', description: '家庭 Alist 账号密码', config: { url: 'https://alist.example.com', username: 'example-user' }, credentials: { password: true } },
       { kind: 'github', alias: 'personal-github', description: '个人 GitHub 账号与 PAT', config: { owner: 'example-user' }, credentials: { token: true } },
       { kind: 'docker', alias: 'dockerhub-images', description: 'Docker Hub 登录凭据', config: { registry: 'docker.io', username: 'example-user', namespace: 'example-user' }, credentials: { token: true } },

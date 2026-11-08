@@ -27,6 +27,10 @@ def docker(token="registry-token-that-must-stay-private", **config):
     return {"kind": "docker", "alias": "images", "config": {"registry": "docker.io", "username": "builder", "namespace": "my-organization", **config}, "secrets": {"token": token}}
 
 
+def windows(password="windows-password-that-must-stay-private", **config):
+    return {"kind": "windows", "alias": "办公电脑", "config": {"host": "192.0.2.30", "username": "Administrator", **config}, "secrets": {"password": password}}
+
+
 def test_persistent_recovery_without_plaintext_files(store):
     secret = "cf-super-secret-token-123"
     store.save_service(cloudflare(secret))
@@ -573,3 +577,125 @@ def test_invalid_external_ssh_endpoint_does_not_modify_existing_entry(store, cha
         store.save_service(update)
     assert (store.data_dir / "state.json").read_bytes() == before_state
     assert (store.data_dir / "vault.json").read_bytes() == before_vault
+
+
+def test_windows_persists_encrypted_password_and_isolates_client_access(store):
+    payload = windows(protocol="winrm_https", domain="EXAMPLE", external_host="win.example.com", external_port=45986)
+    store.save_service(payload)
+    store.save_service(ssh(password="unrelated-ssh-password") | {"alias": payload["alias"]})
+    client = store.create_client("Windows client", ["windows/办公电脑"])
+    persisted = (store.data_dir / "state.json").read_text() + (store.data_dir / "vault.json").read_text()
+    assert payload["secrets"]["password"] not in persisted
+    assert payload["secrets"]["password"] not in json.dumps(store.services())
+    restored = Store(store.data_dir)
+    allowed = restored.client_for_token(client["token"])["allowed_services"]
+    metadata = restored.metadata(allowed)
+    assert len(metadata) == 1 and metadata[0]["id"] == "windows/办公电脑"
+    assert metadata[0]["available_fields"] == ["password"]
+    assert payload["secrets"]["password"] not in json.dumps(metadata)
+    result = restored.export_credential("windows/办公电脑", allowed, ["password"])
+    assert result["connection"] == payload["config"] | {"port": 5986}
+    assert result["credentials"] == payload["secrets"]
+    assert restored.export_credential("windows/办公电脑", allowed, [])["credentials"] == {}
+    with pytest.raises(ValueError, match="Credential unavailable"):
+        restored.export_credential("ssh/办公电脑", allowed)
+    with pytest.raises(ValueError, match="Credential unavailable"):
+        restored.export_credential("windows/办公电脑", ["ssh/办公电脑"])
+    with pytest.raises(ValueError, match="Requested credential field unavailable"):
+        restored.export_credential("windows/办公电脑", allowed, ["private_key"])
+
+
+@pytest.mark.parametrize("protocol,port", [("rdp", 3389), ("winrm_http", 5985), ("winrm_https", 5986)])
+def test_windows_protocol_defaults_and_optional_external_mapping(store, protocol, port):
+    store.save_service(windows(protocol=protocol, external_host="2001:db8::30"))
+    config = store.export_credential("windows/办公电脑", ["*"])["connection"]
+    assert config["port"] == port and config["external_port"] == port
+    assert config["domain"] == ""
+    assert config["external_host"] == "2001:db8::30"
+
+
+def test_windows_defaults_to_rdp_without_external_fields(store):
+    store.save_service(windows())
+    config = store.metadata(["*"])[0]["connection"]
+    assert config == {"host": "192.0.2.30", "port": 3389, "username": "Administrator", "domain": "", "protocol": "rdp"}
+
+
+@pytest.mark.parametrize("username,domain", [
+    ("local user", ""), ("Administrator", "."), (r"EXAMPLE\alice", ""),
+    ("alice@example.test", ""), ("张三", "PC-NAME"), ("alice", "example.test"),
+])
+def test_windows_account_forms_are_preserved_exactly(store, username, domain):
+    store.save_service(windows(username=username, domain=domain))
+    config = store.metadata(["*"])[0]["connection"]
+    assert config["username"] == username and config["domain"] == domain
+
+
+@pytest.mark.parametrize("secrets", [{}, {"password": ""}, {"password": "   "}])
+def test_windows_initial_password_required_without_mutating_store(store, secrets):
+    before = (store.data_dir / "state.json").read_bytes(), (store.data_dir / "vault.json").read_bytes()
+    with pytest.raises(ValueError, match="Windows password is required"):
+        store.save_service(windows() | {"secrets": secrets})
+    assert before == ((store.data_dir / "state.json").read_bytes(), (store.data_dir / "vault.json").read_bytes())
+
+
+def test_windows_endpoint_edit_preserves_password_and_explicit_clear_removes_mapping(store):
+    store.save_service(windows(external_host="win.example.com", external_port=43389))
+    store.save_service(windows(password="", domain="EXAMPLE"))
+    result = store.export_credential("windows/办公电脑", ["*"])
+    assert result["connection"]["external_host"] == "win.example.com"
+    assert result["connection"]["external_port"] == 43389
+    assert result["credentials"] == windows()["secrets"]
+    store.save_service(windows(password="", external_host=""))
+    result = Store(store.data_dir).export_credential("windows/办公电脑", ["*"])
+    assert "external_host" not in result["connection"] and "external_port" not in result["connection"]
+    assert result["connection"]["host"] == "192.0.2.30" and result["connection"]["port"] == 3389
+    assert result["credentials"] == windows()["secrets"]
+    store.save_service(windows(password="new-windows-password"))
+    assert store.export_credential("windows/办公电脑", ["*"])["credentials"] == {"password": "new-windows-password"}
+
+
+@pytest.mark.parametrize("changes", [
+    {"protocol": "ssh"}, {"protocol": []}, {"protocol": None},
+    {"host": "https://windows.example.com"}, {"host": "windows.example.com:3389"},
+    {"port": True}, {"port": 0}, {"port": 65536}, {"port": "3389"}, {"port": 3389.5},
+    {"username": ""}, {"username": None}, {"username": "alice\n"}, {"username": "a" * 257},
+    {"domain": "example\n"}, {"domain": "example user"}, {"domain": r"EXAMPLE\alice"}, {"domain": None},
+    {"external_host": "https://windows.example.com"}, {"external_host": "win.example.com:43389"},
+    {"external_host": None}, {"external_host": " "}, {"external_port": 43389},
+    {"external_host": "", "external_port": 43389},
+    {"external_host": "win.example.com", "external_port": True},
+    {"external_host": "win.example.com", "external_port": 0},
+    {"external_host": "win.example.com", "external_port": 65536},
+    {"external_host": "win.example.com", "external_port": "43389"},
+    {"external_host": "win.example.com", "external_port": None},
+    {"password_file": "../bad.secret"}, {"auth_method": "key"},
+])
+def test_windows_invalid_configuration_does_not_replace_existing_credential(store, changes):
+    store.save_service(windows())
+    before = (store.data_dir / "state.json").read_bytes(), (store.data_dir / "vault.json").read_bytes()
+    with pytest.raises(ValueError):
+        store.save_service(windows(password="must-not-save", **changes))
+    assert before == ((store.data_dir / "state.json").read_bytes(), (store.data_dir / "vault.json").read_bytes())
+
+
+def test_windows_rejects_non_password_secret_fields(store):
+    with pytest.raises(ValueError, match="unsupported fields"):
+        store.save_service(windows() | {"secrets": {"password": "pass", "private_key": "not-supported"}})
+
+
+def test_upgrade_adds_windows_without_changing_existing_credentials_or_grants(store):
+    store.save_service(ssh(password="existing-password"))
+    client = store.create_client("Existing client", ["ssh/nas"])
+    state_path = store.data_dir / "state.json"
+    old_state = json.loads(state_path.read_text())
+    del old_state["config"]["windows"]
+    state_path.write_text(json.dumps(old_state))
+    old_vault = (store.data_dir / "vault.json").read_bytes()
+    restored = Store(store.data_dir)
+    assert json.loads(state_path.read_text())["config"]["windows"] == {}
+    assert (store.data_dir / "vault.json").read_bytes() == old_vault
+    assert restored.export_credential("ssh/nas", ["*"])["credentials"] == {"password": "existing-password"}
+    assert restored.client_for_token(client["token"])["allowed_services"] == ["ssh/nas"]
+    restored.save_service(windows())
+    assert len(restored.metadata(["*"])) == 2
+    assert len(restored.metadata(["ssh/nas"])) == 1

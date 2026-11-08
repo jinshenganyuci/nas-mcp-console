@@ -99,6 +99,14 @@ Hermes 可先运行 `hermes mcp test private_credentials`。不同 profile 的�
 
 「测试内网」只检查内网认证；公网 DNS、端口映射和防火墙需由实际外网客户端验证。保存外网字段不会自动建立映射、检测当前位置或切换连接。外网映射端口通常和内网 `22` 不同，应填实际对外端口。
 
+## Windows 测试端口可达，为什么还是不能登录
+
+Windows 的「测试内网端口」只从 NAS 容器打开目标 TCP 连接，不发送账号密码，也不确认远端是否是 RDP / WinRM 服务。因此，即使密码填写错误，开放的端口也可能显示可达。
+
+使用客户端实际登录时，检查协议和端口是否与 Windows 监听配置一致，账号是否有远程登录权限，以及密码是否为账号密码而非 Windows Hello PIN。用户名已经是 `OFFICE\alice` 或 `alice@example.com` 时，不要再添加一遍域；使用简短用户名时，按目标环境填写域。
+
+Windows 同样默认连接 `host` / `port`。外网连接需要已保存 `external_host` / `external_port`，并明确让客户端使用它们；后台不会检测外网映射。只有网络可达、客户端具备对应连接工具、目标服务与账号允许登录时，获取的凭据才能用于实际连接。
+
 ## OAuth 页面无法添加、循环登录或回调失败
 
 按顺序检查：
@@ -115,7 +123,7 @@ Hermes 可先运行 `hermes mcp test private_credentials`。不同 profile 的�
 
 ## 测试凭据成功，实际操作却没有权限
 
-后台测试验证的是有限的认证过程，未执行删除仓库、推送镜像或改 DNS 等操作。请同时检查：
+除 Windows 仅测试 TCP 端口外，后台测试验证的是有限的认证过程，未执行删除仓库、推送镜像或改 DNS 等操作。请同时检查：
 
 - 上游 Token 的权限、资源范围和有效期。
 - Token 所属账号是否本来就有目标仓库、组织、域名或命名空间权限。
@@ -133,7 +141,7 @@ Cloudflare 有一个特别情况：当前 API Token 测试使用用户级 `/user
 
 ## latest 已拉取，为什么看起来没更新
 
-确认 Compose 的 `image` 末尾实际使用的是 `:latest`。默认发布 Compose 固定为 `:0.4.0`，拉取固定标签不会自动改成未来版本。
+确认 Compose 的 `image` 末尾实际使用的是 `:latest`。默认发布 Compose 固定为 `:0.5.0`，拉取固定标签不会自动改成未来版本。
 
 拉取之后还需要 `docker compose -f compose.fnos.yaml up -d`，让容器使用新镜像。保持原有项目目录、挂载路径和运行 UID/GID 不变；更新前先完整备份数据。
 

@@ -108,6 +108,7 @@ select:focus-visible, textarea:focus-visible {
 .service-icon { display: grid; place-items: center; flex: 0 0 auto; width: 44px; height: 44px; border-radius: 12px; font-size: 21px; }
 .service-icon.cloudflare { color: #e78b2b; background: #fff2e4; }
 .service-icon.ssh { color: #4a6bd8; background: #edf1ff; }
+.service-icon.windows { color: #0878b5; background: #e5f5ff; }
 .service-icon.alist { color: #1e9a92; background: #e8f7f3; }
 .service-icon.github { color: #354154; background: #edf0f4; }
 .service-icon.docker { color: #2377cb; background: #eaf4ff; }

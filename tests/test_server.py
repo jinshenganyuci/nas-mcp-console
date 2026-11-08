@@ -175,6 +175,55 @@ def test_ssh_internal_and_external_endpoints_share_scoped_credentials(web):
     assert "synthetic-shared-ssh-secret" not in json.dumps(refused)
 
 
+@pytest.mark.parametrize("protocol,port", [("rdp", 3389), ("winrm_http", 5985), ("winrm_https", 5986)])
+def test_windows_credentials_http_mcp_scope_edit_and_delete(web, protocol, port):
+    client, _, _ = web
+    headers = login(web)
+    credential_id = "windows/家庭电脑"
+    connection = {"host": "192.0.2.20", "protocol": protocol, "username": "Administrator",
+                  "domain": "LAB", "external_host": "windows.example.com", "external_port": 13389}
+    payload = {"kind": "windows", "alias": "家庭电脑", "config": connection,
+               "secrets": {"password": "synthetic-windows-secret"}}
+    response = client.post("/api/services", headers=headers, json=payload)
+    assert response.status_code == 200, response.text
+    expected = {**connection, "port": port}
+    rows = client.get("/api/services")
+    assert rows.json()["services"][0]["config"] == expected
+    assert "synthetic-windows-secret" not in rows.text
+    allowed = client.post("/api/clients", headers=headers,
+        json={"name": "windows-only", "allowed_services": [credential_id]}).json()["token"]
+    denied = client.post("/api/clients", headers=headers,
+        json={"name": "unrelated", "allowed_services": []}).json()["token"]
+    result, found = tool_result(client, allowed, "list_credentials", {"query": "windows.example.com"})
+    assert found["count"] == 1
+    assert found["credentials"][0]["connection"] == expected
+    assert found["credentials"][0]["available_fields"] == ["password"]
+    assert "synthetic-windows-secret" not in json.dumps(result)
+    _, value = tool_result(client, allowed, "get_credentials", {"credential_id": credential_id, "fields": ["password"]})
+    assert value["connection"] == expected
+    assert value["credentials"] == {"password": "synthetic-windows-secret"}
+    _, hidden = tool_result(client, denied, "list_credentials", {"query": "家庭电脑"})
+    assert hidden == {"credentials": [], "count": 0}
+    refused = rpc(client, denied, "tools/call", {"name": "get_credentials", "arguments": {"credential_id": credential_id}}).json()["result"]
+    assert refused["isError"]
+    assert "synthetic-windows-secret" not in json.dumps(refused)
+    refused = rpc(client, allowed, "tools/call", {"name": "get_credentials", "arguments": {"credential_id": credential_id, "fields": ["private_key"]}}).json()["result"]
+    assert refused["isError"]
+    # Editing an endpoint must preserve the saved password; clearing the
+    # external address must not change the default internal endpoint.
+    payload["config"] = {**connection, "external_host": ""}
+    payload["config"].pop("external_port")
+    payload["secrets"] = {"password": ""}
+    assert client.post("/api/services", headers=headers, json=payload).status_code == 200
+    _, value = tool_result(client, allowed, "get_credentials", {"credential_id": credential_id})
+    assert value["credentials"]["password"] == "synthetic-windows-secret"
+    assert value["connection"]["host"] == connection["host"]
+    assert "external_host" not in value["connection"]
+    assert client.delete("/api/services/windows/" + quote("家庭电脑", safe=""), headers=headers).status_code == 200
+    result, _ = tool_result(client, allowed, "get_credentials", {"credential_id": credential_id})
+    assert result["isError"]
+
+
 def test_chinese_credential_name_http_mcp_scope_and_encoded_routes(web, monkeypatch):
     client, _, _ = web
     headers = login(web)

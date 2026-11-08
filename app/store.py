@@ -27,7 +27,8 @@ from cryptography.fernet import Fernet, InvalidToken
 from .oauth import build_oauth
 
 
-KINDS = ("cloudflare", "ssh", "alist", "github", "docker")
+KINDS = ("cloudflare", "ssh", "windows", "alist", "github", "docker")
+WINDOWS_PORTS = {"rdp": 3389, "winrm_http": 5985, "winrm_https": 5986}
 # Unicode word characters include four invisible Hangul fillers; exclude them
 # as well as the whitespace, combining marks and controls rejected by \w.
 ALIAS = re.compile(r"(?!.*[\u115f\u1160\u3164\uffa0])[^\W_][\w-]{0,63}\Z")
@@ -44,6 +45,7 @@ SECRET_FIELDS = {
 KIND_SECRETS = {
     "cloudflare": {"token", "global_api_key"},
     "ssh": {"password", "private_key", "key_passphrase", "known_hosts"},
+    "windows": {"password"},
     "alist": {"password"},
     "github": {"token"},
     "docker": {"token"},
@@ -108,6 +110,25 @@ def _url(value: str, *, public: bool = False) -> str:
     except ValueError:
         raise ValueError("Invalid URL: use HTTP(S), no credentials/query/fragment; public non-loopback URLs require HTTPS") from None
     return value.rstrip("/")
+
+
+def _endpoints(config: dict, label: str, default_port: int) -> dict:
+    """Validate a default internal endpoint and an optional external mapping."""
+    host = _host(config.get("host"))
+    port = config.get("port", default_port)
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError(f"{label} port must be between 1 and 65535")
+    result = {"host": host, "port": port}
+    external_host = _text(config.get("external_host", ""), f"{label} external host", 253, empty=True)
+    if external_host:
+        external_host = _host(external_host)
+        external_port = config.get("external_port", default_port)
+        if type(external_port) is not int or not 1 <= external_port <= 65535:
+            raise ValueError(f"{label} external port must be between 1 and 65535")
+        result.update(external_host=external_host, external_port=external_port)
+    elif "external_port" in config:
+        raise ValueError(f"{label} external port requires an external host")
+    return result
 
 
 def _password_hash(password: str, salt: str) -> str:
@@ -327,26 +348,26 @@ class Store:
             return {"registry": registry, **names}
         if kind == "ssh":
             _check_keys(config, {"host", "port", "external_host", "external_port", "username", "auth_method"}, "SSH config")
-            host = _host(config.get("host"))
+            result = _endpoints(config, "SSH", 22)
             username = _text(config.get("username"), "SSH username", 128)
             if any(c.isspace() for c in username):
                 raise ValueError("Invalid SSH username")
-            port = config.get("port", 22)
-            if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
-                raise ValueError("SSH port must be between 1 and 65535")
             method = config.get("auth_method", "key")
             if method not in {"password", "key"}:
                 raise ValueError("SSH auth_method must be password or key")
-            result = {"host": host, "port": port, "username": username, "auth_method": method}
-            external_host = _text(config.get("external_host", ""), "SSH external host", 253, empty=True)
-            if external_host:
-                external_host = _host(external_host)
-                external_port = config.get("external_port", 22)
-                if isinstance(external_port, bool) or not isinstance(external_port, int) or not 1 <= external_port <= 65535:
-                    raise ValueError("SSH external port must be between 1 and 65535")
-                result.update(external_host=external_host, external_port=external_port)
-            elif "external_port" in config:
-                raise ValueError("SSH external port requires an external host")
+            result.update(username=username, auth_method=method)
+            return result
+        if kind == "windows":
+            _check_keys(config, {"host", "port", "external_host", "external_port", "username", "domain", "protocol"}, "Windows config")
+            protocol = config.get("protocol", "rdp")
+            if not isinstance(protocol, str) or protocol not in WINDOWS_PORTS:
+                raise ValueError("Windows protocol must be rdp, winrm_http or winrm_https")
+            result = _endpoints(config, "Windows", WINDOWS_PORTS[protocol])
+            username = _text(config.get("username"), "Windows username", 256)
+            domain = _text(config.get("domain", ""), "Windows domain", 253, empty=True)
+            if any(c.isspace() or c in "\\/@" for c in domain):
+                raise ValueError("Windows domain must be a domain or computer name, without a username")
+            result.update(username=username, domain=domain, protocol=protocol)
             return result
         _check_keys(config, {"url", "username"}, "Alist config")
         return {"url": _url(config.get("url")), "username": _text(config.get("username"), "Alist username", 256)}
@@ -368,10 +389,12 @@ class Store:
             allowed -= {"global_api_key"} if cfg["auth_method"] == "api_token" else {"token"}
         with self._lock:
             old = self._state["config"][kind].get(alias, {})
-            if kind == "ssh" and not {"external_host", "external_port"}.intersection(payload.get("config", {})):
+            if kind == "windows" and not values.get("password", "").strip() and old.get("password_file") not in self._vault:
+                raise ValueError("Windows password is required when creating a credential")
+            if kind in {"ssh", "windows"} and not {"external_host", "external_port"}.intersection(payload.get("config", {})):
                 # An older client cannot edit the optional external endpoint.
                 # Preserve it when both keys are absent; an explicit blank host
-                # from the new form removes it without affecting SSH secrets.
+                # from the new form removes it without affecting login secrets.
                 for field in ("external_host", "external_port"):
                     if field in old:
                         cfg[field] = old[field]

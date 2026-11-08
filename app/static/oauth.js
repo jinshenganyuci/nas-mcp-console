@@ -4,7 +4,7 @@
   const $ = selector => document.querySelector(selector);
   const request = new URLSearchParams(location.search).get('request');
   const state = { context: null, working: false };
-  const kinds = { cloudflare: 'Cloudflare', ssh: 'SSH', alist: 'Alist', github: 'GitHub', docker: '镜像仓库' };
+  const kinds = { cloudflare: 'Cloudflare', ssh: 'SSH', windows: 'Windows', alist: 'Alist', github: 'GitHub', docker: '镜像仓库' };
 
   function errorText(error) {
     return error instanceof Error ? error.message : '操作未完成，请重试。';

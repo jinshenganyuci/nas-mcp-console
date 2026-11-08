@@ -2,13 +2,13 @@
 
 [返回首页](../README.md) · [接入客户端](clients.md)
 
-先在管理后台保存服务凭据，再给客户端授权。这里录入的 SSH 密码、Cloudflare 密钥、GitHub PAT 等，是客户端最终要使用的服务凭据；「客户端授权」生成的 Token 只用于连接本凭据库，两者不要混填。
+先在管理后台保存服务凭据，再给客户端授权。这里录入的 SSH / Windows 密码、Cloudflare 密钥、GitHub PAT 等，是客户端最终要使用的服务凭据；「客户端授权」生成的 Token 只用于连接本凭据库，两者不要混填。
 
 ## 通用操作
 
 1. 在后台选择「添加凭据」或对应类型的添加按钮。
 2. 填写凭据名称、连接信息和秘密值，点击保存。
-3. 在条目卡片点击「测试凭据」（SSH 为「测试内网」），查看该次认证结果。
+3. 在条目卡片点击测试按钮。SSH 为「测试内网」，Windows 为「测试内网端口」；Windows 仅检查 TCP 连通，其他类型按下文各自范围验证认证。
 4. 到「客户端授权」把这个条目授予需要使用它的客户端。指定条目的旧授权不会自动包含其他新条目；选择「全部凭据」的授权会包含未来新增条目。
 
 ### 凭据名称、备注和用户名分别是什么
@@ -60,6 +60,41 @@
 服务器重装、主机密钥轮换或地址填错都可能导致指纹不匹配。改变条目的主机或端口会清除旧主机信任，需要重新核对。测试只完成握手和登录，不执行命令。
 
 测试连接从运行凭据库的容器发出；客户端通过 MCP 取到地址后，实际 SSH 连接从客户端的执行环境发出。因此，NAS 能访问的内网 IP，不一定能从异地客户端直接连接；异地使用需要相应的 VPN、路由或对外 SSH 地址。
+
+## Windows：本地或域账号密码
+
+从 0.5.0 起，选择「Windows」即可保存 Windows 远程登录所需的信息。此类型适用于 RDP 或 WinRM；如果 Windows 主机使用 OpenSSH，仍选择「SSH」类型。
+
+| 后台字段 | 如何填写 |
+| --- | --- |
+| 连接方式 | RDP、WinRM HTTP 或 WinRM HTTPS；按目标电脑已配置的服务选择 |
+| 内网地址（默认） | IP 或主机名，例如 `192.168.1.30`；不带协议、路径或端口 |
+| 内网端口 | RDP 默认 `3389`，WinRM HTTP 默认 `5985`，WinRM HTTPS 默认 `5986`；可改为实际监听端口 |
+| 外网域名或 IP | 可选，例如 `windows.example.com`，不带协议或端口 |
+| 外网映射端口 | 配置外网地址后填写实际映射端口，例如 `13389`；与内网端口可以不同 |
+| Windows 用户名 | 本地用户名，如 `Administrator`；也可填写 `OFFICE\alice` 或 `alice@example.com` 这样的完整账号 |
+| 域 / 计算机名（选填） | 使用简短用户名时可填写所属域或目标计算机名，如 `OFFICE` 或 `DESKTOP-01`；用户名已包含域或为 UPN 时留空，避免重复拼接 |
+| Windows 登录密码 | 上述账号的实际密码；编辑时留空保留原密码 |
+
+协议与默认端口参考微软的 [RDP 监听端口说明](https://learn.microsoft.com/en-us/windows-server/remote/remote-desktop-services/remotepc/change-listening-port) 和 [WinRM 配置说明](https://learn.microsoft.com/en-us/windows/win32/winrm/installation-and-configuration-for-windows-remote-management)。选择协议只是记录连接方式，不会替目标电脑开启远程服务、配置证书、防火墙或端口映射。
+
+**密码栏填写账号密码，不填 Windows Hello PIN。** PIN 与账号密码不同，不能将本机解锁用的 PIN 当作此处的远程账号密码。[微软 PIN 说明](https://support.microsoft.com/en-us/windows/security/change-or-reset-your-pin-in-windows)
+
+内外网入口共用一份账号、域和密码，默认使用内网，用户指定外网时客户端再选外网入口；不会自动探测或切换。外网留空即可只用内网，清空外网地址并保存会移除该入口。
+
+后台的 **「测试内网端口」只从凭据库容器尝试连接内网 TCP 端口**，不发送用户名或密码，不检查 RDP / WinRM 协议、TLS 证书或登录权限。端口可达不代表密码正确，实际登录需要由客户端验证。凭据库不会通过 WinRM 执行命令，也不会建立远程桌面会话。
+
+MCP 条目 ID 形如 `windows/办公电脑`，`connection` 包含 `protocol`（`rdp` / `winrm_http` / `winrm_https`）、`host`、`port`、`username`、可选 `domain` 和外网字段。秘密字段只有 `password`。先按名称查询，再使用返回的实际 ID 获取密码：
+
+```json
+{"name":"list_credentials","arguments":{"query":"办公电脑"}}
+```
+
+```json
+{"name":"get_credentials","arguments":{"credential_id":"windows/办公电脑","fields":["password"]}}
+```
+
+新增 Windows 条目后，检查现有客户端的授权范围：选择「全部凭据」的授权会包含新条目；限定条目的授权需要重新创建并包含它。保存好客户端连接后，新对话按相同流程读取即可。详见[客户端接入](clients.md)。
 
 ## Cloudflare：API Token 或 Global API Key
 
@@ -216,12 +251,13 @@ GitHub 条目和 GHCR 条目可以保存同一个有相应权限的 PAT，也可
 
 | 现象 | 下一步 |
 | --- | --- |
-| 显示「已保存凭据」 | 仅表示已录入秘密值，点击「测试凭据」才会尝试认证 |
+| 显示「已保存凭据」 | 仅表示已录入秘密值，不表示登录已验证 |
+| Windows 内网端口可达，但登录失败 | 端口测试不验证密码；由实际客户端检查账号、域、密码、协议和远程登录权限 |
 | 测试成功，但业务操作返回 403 | 检查目标资源范围、具体操作权限、组织策略和账号自身权限 |
 | GitHub 提示登录账户不匹配 | 把用户名改为 Token 所属个人账号，组织名放在实际操作的仓库目标中 |
 | SSH 提示主机指纹不匹配 | 核对目标主机和密钥变更，不能仅凭 IP 相同就认定是原服务器 |
 | Alist 测试失败 | 检查基础地址、账号密码、OTP 要求和服务是否能从容器访问 |
 | Cloudflare 账户级 Token 测试失败 | 参照上面的账户级 Token 限制，用正确验证接口或业务接口检查 |
-| NAS 测试成功，异地客户端仍连不上 SSH / Alist | 检查客户端到目标服务的网络；MCP 取用凭据不会自动打通内网 |
+| NAS 测试成功，异地客户端仍连不上 SSH / Windows / Alist | 检查客户端到目标服务的网络；MCP 取用凭据不会自动打通内网 |
 
 后台测试结果只记录成功与否、简短说明和时间。连接配置和秘密值变更后重新测试；过期或被撤销的上游 Token 需要到对应平台重新生成，再编辑本库条目替换。保持条目名称不变时，原客户端对这个条目的授权会继续有效。

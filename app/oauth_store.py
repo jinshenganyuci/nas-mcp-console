@@ -40,7 +40,7 @@ _CHALLENGE = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 _SCOPE = re.compile(r"[\x21\x23-\x5b\x5d-\x7e]{1,128}\Z")
 SUPPORTED_SCOPE = "credentials:read"
 _NAME = re.compile(r"(?!.*[\u115f\u1160\u3164\uffa0])[^\W_][\w-]{0,63}\Z")
-_KINDS = {"cloudflare", "ssh", "alist", "github", "docker"}
+_KINDS = {"cloudflare", "ssh", "windows", "alist", "github", "docker"}
 
 
 class OAuthError(ValueError):

@@ -1,7 +1,8 @@
-"""One-shot, administrator-initiated authentication checks for the vault UI.
+"""One-shot, administrator-initiated availability checks for the vault UI.
 
 These checks do not expose MCP tools or perform service operations. They never
 return credentials, upstream response bodies, or authentication exception text.
+Windows checks only TCP reachability and never attempt authentication.
 """
 
 from __future__ import annotations
@@ -274,11 +275,44 @@ def _ssh(connection: dict, credentials: dict, trust_fingerprint: str | None) -> 
                     pass
 
 
+def _windows(connection: dict, credentials: dict) -> dict:
+    """Probe the internal port only; never send account data or a password."""
+    host = _text(connection, "host", maximum=253)
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        hostname = host.rstrip(".").encode("idna").decode("ascii")
+        if not hostname or any(not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label) for label in hostname.split(".")):
+            raise _Invalid("Windows 主机地址格式无效。") from None
+    defaults = {"rdp": 3389, "winrm_http": 5985, "winrm_https": 5986}
+    protocol = connection.get("protocol", "rdp")
+    if not isinstance(protocol, str) or protocol not in defaults:
+        raise _Invalid("不支持的 Windows 连接协议。")
+    port = connection.get("port", defaults[protocol])
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise _Invalid("Windows 端口格式无效。")
+    sock = None
+    try:
+        sock = socket.create_connection((host, port), timeout=8.0)
+        return {"ok": True, "message": "Windows 内网端口可达；仅验证 TCP 连接，未验证账号密码、Windows 登录或服务权限。"}
+    except TimeoutError:
+        return {"ok": False, "message": "Windows 内网端口测试超时，请检查地址、端口和网络；未验证账号密码。"}
+    except OSError:
+        return {"ok": False, "message": "无法连接 Windows 内网端口，请检查地址、端口、服务和防火墙；未验证账号密码。"}
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+
 def validate_credential(record: dict, trust_fingerprint: str | None = None) -> dict:
-    """Authenticate once for the admin UI without exercising resource access.
+    """Check availability for the admin UI without exercising resource access.
 
 The caller persists ``verified_known_hosts`` only after a successful SSH check.
 No returned status implies authorization for a later business operation.
+Windows checks only TCP reachability, without authentication.
 """
     try:
         if not isinstance(record, dict):
@@ -289,7 +323,7 @@ No returned status implies authorization for a later business operation.
         kind = record.get("kind")
         if kind == "ssh":
             return _ssh(connection, credentials, trust_fingerprint)
-        checks = {"cloudflare": _cloudflare, "github": _github, "alist": _alist, "docker": _docker}
+        checks = {"cloudflare": _cloudflare, "github": _github, "alist": _alist, "docker": _docker, "windows": _windows}
         if not isinstance(kind, str) or kind not in checks:
             raise _Invalid("不支持的凭据类型。")
         return checks[kind](connection, credentials)

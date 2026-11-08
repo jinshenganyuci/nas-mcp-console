@@ -1,4 +1,4 @@
-"""Authentication checks use mock HTTP/SSH peers; no real services are contacted."""
+"""Availability checks use mock HTTP/SSH/TCP peers; no real services are contacted."""
 
 import base64
 import hashlib
@@ -395,3 +395,53 @@ def test_invalid_records_fail_without_raw_exception(invalid):
     result = validate_credential(invalid)
     assert result["ok"] is False
     assert set(result) == {"ok", "message"}
+
+
+@pytest.mark.parametrize("protocol,port", [("rdp", 3389), ("winrm_http", 5985), ("winrm_https", 5986)])
+def test_windows_check_only_connects_internal_port_and_never_sends_credentials(monkeypatch, protocol, port):
+    sock = MagicMock()
+    connect = MagicMock(return_value=sock)
+    monkeypatch.setattr(validation.socket, "create_connection", connect)
+    result = validate_credential(record("windows", {
+        "host": "192.0.2.30", "protocol": protocol, "username": r"EXAMPLE\Administrator",
+        "external_host": "windows.example.com", "external_port": 43389,
+    }, {"password": SECRET}))
+    connect.assert_called_once_with(("192.0.2.30", port), timeout=8.0)
+    assert result["ok"] is True
+    assert "仅验证 TCP" in result["message"] and "未验证账号密码" in result["message"]
+    assert SECRET not in json.dumps(result)
+    assert "verified_known_hosts" not in result
+    assert [call[0] for call in sock.method_calls] == ["close"]
+
+
+def test_windows_port_check_uses_custom_port_and_does_not_require_login_data(monkeypatch):
+    sock = MagicMock()
+    connect = MagicMock(return_value=sock)
+    monkeypatch.setattr(validation.socket, "create_connection", connect)
+    value = {"kind": "windows", "connection": {"host": "2001:db8::30", "port": 43389}, "credentials": {}}
+    result = validate_credential(value)
+    assert result["ok"] and "未验证账号密码" in result["message"]
+    connect.assert_called_once_with(("2001:db8::30", 43389), timeout=8.0)
+    sock.close.assert_called_once()
+
+
+@pytest.mark.parametrize("error", [TimeoutError(SECRET), ConnectionRefusedError(SECRET), OSError(SECRET)])
+def test_windows_unreachable_port_returns_sanitized_non_authentication_result(monkeypatch, error):
+    connect = MagicMock(side_effect=error)
+    monkeypatch.setattr(validation.socket, "create_connection", connect)
+    result = validate_credential(record("windows", {"host": "win.internal"}, {"password": SECRET}))
+    assert result["ok"] is False
+    assert SECRET not in json.dumps(result)
+    assert "内网端口" in result["message"] and "未验证账号密码" in result["message"]
+    assert "超时" in result["message"] if isinstance(error, TimeoutError) else "无法连接" in result["message"]
+
+
+@pytest.mark.parametrize("changes", [
+    {"host": "https://win.example.com"}, {"host": "user@win.example.com"},
+    {"host": "win.example.com:3389"}, {"port": False}, {"port": 65536},
+    {"port": 0}, {"port": "3389"}, {"protocol": "unknown"}, {"protocol": []},
+])
+def test_windows_invalid_endpoint_does_not_connect(changes):
+    result = validate_credential(record("windows", {"host": "win.internal", **changes}, {"password": SECRET}))
+    assert result["ok"] is False and SECRET not in json.dumps(result)
+    validation.socket.create_connection.assert_not_called()

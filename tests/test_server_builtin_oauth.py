@@ -163,6 +163,38 @@ def test_complete_login_consent_mcp_scope_refresh_and_admin_revoke(oauth_web):
         'resource': RESOURCE, 'refresh_token': renewed['refresh_token']}).status_code == 400
 
 
+def test_windows_oauth_explicit_grant_and_password_survive_restart(oauth_web):
+    client, path = oauth_web
+    headers = login(client)
+    credential_id = 'windows/办公电脑'
+    connection = {'host': '192.0.2.20', 'port': 5986, 'protocol': 'winrm_https',
+                  'username': 'Administrator', 'domain': 'LAB',
+                  'external_host': 'windows.example.com', 'external_port': 15986}
+    saved = client.post('/api/services', headers=headers, json={'kind': 'windows', 'alias': '办公电脑',
+        'config': connection, 'secrets': {'password': 'synthetic-windows-oauth-password'}})
+    assert saved.status_code == 200, saved.text
+    client_id = register(client)
+    request_id = begin(client, client_id)
+    info = client.get('/api/oauth/request', params={'request': request_id})
+    assert credential_id in {row['id'] for row in info.json()['services']}
+    assert 'synthetic-windows-oauth-password' not in info.text
+    tokens = exchange(client, client_id, approve(client, request_id, headers, [credential_id]))
+    with TestClient(create_app(path), base_url=ORIGIN) as fresh:
+        renewed = fresh.post('/token', data={'grant_type': 'refresh_token', 'client_id': client_id,
+            'resource': RESOURCE, 'refresh_token': tokens['refresh_token']})
+        assert renewed.status_code == 200, renewed.text
+        token = renewed.json()['access_token']
+        listed = content(rpc(fresh, token, 'tools/call', {'name': 'list_credentials', 'arguments': {}}))
+        assert [row['id'] for row in listed['credentials']] == [credential_id]
+        result = content(rpc(fresh, token, 'tools/call', {'name': 'get_credentials',
+            'arguments': {'credential_id': credential_id, 'fields': ['password']}}))
+        assert result['credentials'] == {'password': 'synthetic-windows-oauth-password'}
+        assert result['connection'] == connection
+        denied = rpc(fresh, token, 'tools/call', {'name': 'get_credentials',
+            'arguments': {'credential_id': 'ssh/家庭NAS'}}).json()['result']
+        assert denied['isError'] and 'synthetic-secret' not in json.dumps(denied)
+
+
 def test_request_browser_binding_cancel_and_no_implicit_consent(oauth_web):
     client, path = oauth_web
     client_id = register(client)
