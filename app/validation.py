@@ -2,7 +2,7 @@
 
 These checks do not expose MCP tools or perform service operations. They never
 return credentials, upstream response bodies, or authentication exception text.
-Windows checks only TCP reachability and never attempt authentication.
+Windows and ADB checks only test TCP reachability and never attempt authentication.
 """
 
 from __future__ import annotations
@@ -307,12 +307,43 @@ def _windows(connection: dict, credentials: dict) -> dict:
                 pass
 
 
+def _adb(connection: dict, credentials: dict) -> dict:
+    """Probe the internal connection port, without speaking ADB or pairing."""
+    host = _text(connection, "host", maximum=253)
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        hostname = host.rstrip(".").encode("idna").decode("ascii")
+        if not hostname or any(not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label) for label in hostname.split(".")):
+            raise _Invalid("ADB 主机地址格式无效。") from None
+    mode = connection.get("mode", "tcp")
+    if not isinstance(mode, str) or mode not in {"tcp", "wireless"}:
+        raise _Invalid("不支持的 ADB 连接方式。")
+    port = connection.get("port", 5555 if mode == "tcp" else None)
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise _Invalid("ADB 连接端口格式无效；无线调试需填写当前连接端口。")
+    sock = None
+    try:
+        sock = socket.create_connection((host, port), timeout=8.0)
+        return {"ok": True, "message": "ADB 内网连接端口可达；仅验证 TCP 连接，未验证 ADB 协议、设备授权或配对。"}
+    except TimeoutError:
+        return {"ok": False, "message": "ADB 内网连接端口测试超时，请检查地址、端口和网络；未验证设备授权或配对。"}
+    except OSError:
+        return {"ok": False, "message": "无法连接 ADB 内网连接端口，请检查地址、端口、设备和防火墙；未验证设备授权或配对。"}
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+
 def validate_credential(record: dict, trust_fingerprint: str | None = None) -> dict:
     """Check availability for the admin UI without exercising resource access.
 
 The caller persists ``verified_known_hosts`` only after a successful SSH check.
 No returned status implies authorization for a later business operation.
-Windows checks only TCP reachability, without authentication.
+Windows and ADB checks only test TCP reachability, without authentication.
 """
     try:
         if not isinstance(record, dict):
@@ -323,7 +354,7 @@ Windows checks only TCP reachability, without authentication.
         kind = record.get("kind")
         if kind == "ssh":
             return _ssh(connection, credentials, trust_fingerprint)
-        checks = {"cloudflare": _cloudflare, "github": _github, "alist": _alist, "docker": _docker, "windows": _windows}
+        checks = {"cloudflare": _cloudflare, "github": _github, "alist": _alist, "docker": _docker, "windows": _windows, "adb": _adb}
         if not isinstance(kind, str) or kind not in checks:
             raise _Invalid("不支持的凭据类型。")
         return checks[kind](connection, credentials)

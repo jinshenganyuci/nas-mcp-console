@@ -81,7 +81,7 @@ select:focus-visible, textarea:focus-visible {
 .page-heading h1 { margin-bottom: 7px; font-size: 27px; font-weight: 700; letter-spacing: -.65px; line-height: 1.4; }
 .page-heading p { margin-bottom: 0; color: var(--muted); font-size: 14px; }
 .quick-add-services { display: flex; flex-wrap: wrap; gap: 10px; margin: -7px 0 25px; }
-.service-type-choices { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-bottom: 22px; }
+.service-type-choices { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 22px; }
 .button.service-type-choice { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; white-space: normal; padding: 13px 14px; text-align: left; }
 .service-type-choice strong { font-size: 13px; }
 .service-type-choice span { color: #8b96a8; font-size: 11px; font-weight: 400; }
@@ -109,6 +109,7 @@ select:focus-visible, textarea:focus-visible {
 .service-icon.cloudflare { color: #e78b2b; background: #fff2e4; }
 .service-icon.ssh { color: #4a6bd8; background: #edf1ff; }
 .service-icon.windows { color: #0878b5; background: #e5f5ff; }
+.service-icon.adb { color: #2f8350; background: #e8f5ec; font-size: 17px; }
 .service-icon.alist { color: #1e9a92; background: #e8f7f3; }
 .service-icon.github { color: #354154; background: #edf0f4; }
 .service-icon.docker { color: #2377cb; background: #eaf4ff; }

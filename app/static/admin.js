@@ -4,7 +4,7 @@
   const $ = (selector, root = document) => root.querySelector(selector);
   const demo = new URLSearchParams(location.search).get('demo') === '1';
   const state = { session: null, services: [], clients: [], oauthGrants: [], settings: {}, view: 'services' };
-  const kinds = { cloudflare: 'Cloudflare', ssh: 'SSH', windows: 'Windows', alist: 'Alist', github: 'GitHub', docker: '镜像仓库' };
+  const kinds = { cloudflare: 'Cloudflare', ssh: 'SSH', windows: 'Windows', adb: 'Android / ADB', alist: 'Alist', github: 'GitHub', docker: '镜像仓库' };
   const windowsProtocols = { rdp: { label: '远程桌面（RDP）', port: 3389 }, winrm_http: { label: 'WinRM（HTTP）', port: 5985 }, winrm_https: { label: 'WinRM（HTTPS）', port: 5986 } };
   const content = $('#content');
   const modal = $('#modal');
@@ -183,6 +183,7 @@
       button('＋ 添加 Cloudflare', () => serviceDialog(null, 'cloudflare'), 'secondary'),
       button('＋ 添加 SSH', () => serviceDialog(null, 'ssh'), 'secondary'),
       button('＋ 添加 Windows', () => serviceDialog(null, 'windows'), 'secondary'),
+      button('＋ 添加 Android / ADB', () => serviceDialog(null, 'adb'), 'secondary'),
       button('＋ 添加 Alist', () => serviceDialog(null, 'alist'), 'secondary'),
       button('＋ 添加 GitHub', () => serviceDialog(null, 'github'), 'secondary'),
       button('＋ 添加 Docker', () => serviceDialog(null, 'docker'), 'secondary'),
@@ -194,7 +195,7 @@
       stat('已授权客户端', state.clients.length + state.oauthGrants.filter(grant => !grantExpired(grant)).length, '按范围读取，随时撤销'),
     ));
     content.append(node('div', { class: 'notice info credential-disclosure' }, node('strong', {}, 'MCP 会返回所选凭据'), node('span', {}, '客户端调用 get_credentials 时，选中的账号、密码或密钥值会返回给该调用客户端。请在「客户端授权」中设置可读取范围。')));
-    content.append(node('div', { class: 'section-heading' }, node('div', {}, node('h2', {}, '已保存的凭据'), node('p', {}, 'Cloudflare、SSH、Windows、Alist、GitHub 与镜像仓库')), node('span', { class: 'badge neutral' }, `${state.services.length} 个条目`)));
+    content.append(node('div', { class: 'section-heading' }, node('div', {}, node('h2', {}, '已保存的凭据'), node('p', {}, 'Cloudflare、SSH、Windows、Android / ADB、Alist、GitHub 与镜像仓库')), node('span', { class: 'badge neutral' }, `${state.services.length} 个条目`)));
     if (!state.services.length) {
       content.append(node('div', { class: 'empty-state' }, node('div', { class: 'empty-icon', 'aria-hidden': 'true' }, '＋'), node('h3', {}, '添加你的第一条凭据'), node('p', {}, '保存服务地址、账号与密码或密钥，之后按名称读取。'), button('添加凭据', () => serviceDialog(), 'primary')));
       return;
@@ -204,11 +205,11 @@
       const cfg = service.config || {};
       const creds = service.credentials || {};
       const verification = service.last_test;
-      const validationText = service.kind === 'windows'
+      const validationText = ['windows', 'adb'].includes(service.kind)
         ? (!verification ? '尚未测试端口' : `${verification.ok ? '最近内网端口可达' : '最近内网端口未连通'} · ${prettyDate(verification.at)}`)
         : (!verification ? '尚未验证' : verification.needs_host_trust ? '等待核对主机指纹' : `${verification.ok ? '最近验证通过' : '最近验证未通过'} · ${prettyDate(verification.at)}`);
       const hasSecret = Object.values(creds).some(Boolean);
-      const icon = { cloudflare: 'CF', ssh: '>_', windows: 'W', alist: 'A', github: 'GH', docker: 'DK' }[service.kind] || '·';
+      const icon = { cloudflare: 'CF', ssh: '>_', windows: 'W', adb: 'AD', alist: 'A', github: 'GH', docker: 'DK' }[service.kind] || '·';
       const title = service.kind === 'docker' ? (cfg.registry === 'ghcr.io' ? 'GHCR 凭据' : 'Docker Hub 凭据') : (kinds[service.kind] || service.kind);
       const details = node('div', { class: 'service-meta' });
       if (service.kind === 'cloudflare') {
@@ -227,6 +228,13 @@
         details.append(meta('用户名', cfg.username));
         if (cfg.domain) details.append(meta('域 / 计算机名', cfg.domain));
         details.append(meta('登录密码', creds.password ? '已保存' : '未填写'));
+      } else if (service.kind === 'adb') {
+        details.append(meta('连接方式', cfg.mode === 'wireless' ? '无线调试（配对）' : '传统 TCP ADB'), meta('内网（默认）', connectionAddress(cfg.host, cfg.port, 5555)));
+        if (cfg.external_host) details.append(meta('外网', connectionAddress(cfg.external_host, cfg.external_port, cfg.port)));
+        if (cfg.mode === 'wireless' && cfg.pairing_port) details.append(meta('内网配对端口', cfg.pairing_port));
+        if (cfg.mode === 'wireless' && cfg.external_pairing_port) details.append(meta('外网配对端口', cfg.external_pairing_port));
+        details.append(meta('ADB 私钥', creds.private_key ? '已保存' : '未填写（选填）'));
+        if (cfg.mode === 'wireless') details.append(meta('临时配对码', creds.pairing_code ? '已保存 · 有效性以设备为准' : '未填写（选填）'));
       } else if (service.kind === 'alist') {
         details.append(meta('服务地址', cfg.url), meta('用户名', cfg.username), meta('登录密码', creds.password ? '已保存' : '未填写'));
       } else if (service.kind === 'github') {
@@ -237,13 +245,13 @@
       grid.append(node('article', { class: 'service-card' },
         node('div', { class: 'service-head' }, node('span', { class: `service-icon ${service.kind}`, 'aria-hidden': 'true' }, icon), node('div', { class: 'service-title' }, node('h3', {}, service.alias), node('span', { class: 'service-alias' }, title)), node('span', { class: `badge ${hasSecret ? 'success' : 'neutral'}` }, hasSecret ? '已保存凭据' : '仅基本信息')),
         node('p', { class: 'service-description' }, service.description || '私人凭据条目'), details,
-        node('div', { class: 'service-foot' }, node('div', { class: 'credential-status' }, node('span', { class: 'credential-note' }, `${service.kind}/${service.alias}`), node('span', { class: `verification-note ${verification?.ok ? 'success' : verification ? 'pending' : ''}`, title: verification?.message || '' }, validationText)), node('div', { class: 'card-actions' }, button(service.kind === 'windows' ? '测试内网端口' : service.kind === 'ssh' ? '测试内网' : '测试凭据', event => {
+        node('div', { class: 'service-foot' }, node('div', { class: 'credential-status' }, node('span', { class: 'credential-note' }, `${service.kind}/${service.alias}`), node('span', { class: `verification-note ${verification?.ok ? 'success' : verification ? 'pending' : ''}`, title: verification?.message || '' }, validationText)), node('div', { class: 'card-actions' }, button(['windows', 'adb'].includes(service.kind) ? '测试内网端口' : service.kind === 'ssh' ? '测试内网' : '测试凭据', event => {
           if (demo) return demoNotice();
           busy(event.currentTarget, () => testCredential(service));
         }, 'secondary small'), button('编辑', () => serviceDialog(service), 'ghost small'), button('删除', () => deleteService(service), 'ghost danger small'))),
       ));
     }
-    content.append(grid, node('p', { class: 'hint validation-hint' }, 'Windows 仅测试内网 TCP 端口是否可达，不验证账号密码或登录权限；其他类型测试认证是否可用，不保证所有业务权限。SSH 也仅测试内网。外网地址供客户端按需连接，MCP 仅提供凭据列表和读取。'), node('div', { class: 'notice info connection-tip' }, node('strong', {}, '按客户端设置读取范围'), node('span', {}, '可授权全部凭据，也可以只授权指定的条目。'), button('管理授权 →', () => setView('clients'), 'ghost small')));
+    content.append(grid, node('p', { class: 'hint validation-hint' }, 'Windows 和 ADB 仅测试内网连接端口的 TCP 连通性，不验证账号密码、设备授权或配对；其他类型测试认证是否可用，不保证所有业务权限。SSH 也仅测试内网。外网地址供客户端按需连接，MCP 仅提供凭据列表和读取。'), node('div', { class: 'notice info connection-tip' }, node('strong', {}, '按客户端设置读取范围'), node('span', {}, '可授权全部凭据，也可以只授权指定的条目。'), button('管理授权 →', () => setView('clients'), 'ghost small')));
   }
 
   async function testCredential(service, body = {}) {
@@ -269,8 +277,8 @@
       ), [button('取消', () => modal.close()), confirm]);
       return false;
     }
-    const fallbackMessage = service.kind === 'windows' ? (result.ok ? '内网端口可达。' : '内网端口未连通。') : (result.ok ? '凭据验证通过。' : '凭据验证未通过。');
-    const testScope = service.kind === 'windows' ? '仅测试 TCP 端口，不验证账号密码或 Windows 登录权限。' : '仅验证认证可用，不保证全部业务权限。';
+    const fallbackMessage = ['windows', 'adb'].includes(service.kind) ? (result.ok ? '内网端口可达。' : '内网端口未连通。') : (result.ok ? '凭据验证通过。' : '凭据验证未通过。');
+    const testScope = service.kind === 'adb' ? '仅测试内网连接端口，不执行 ADB，不验证设备授权或配对码。' : service.kind === 'windows' ? '仅测试 TCP 端口，不验证账号密码或 Windows 登录权限。' : '仅验证认证可用，不保证全部业务权限。';
     toast(`${result.message || fallbackMessage} ${testScope}`, result.ok ? 'success' : 'error');
     return true;
   }
@@ -305,7 +313,7 @@
     const typeButtons = [];
     if (!service) {
       const choices = node('div', { class: 'service-type-choices', 'aria-label': '选择凭据类型' });
-      for (const [value, label, detail] of [['cloudflare', 'Cloudflare', 'Token / 总控制密钥'], ['ssh', 'SSH', '密码 / 私钥'], ['windows', 'Windows', '远程桌面 / WinRM'], ['alist', 'Alist', '账号密码'], ['github', 'GitHub', '用户名 + PAT'], ['docker', '镜像仓库', 'Docker Hub / GHCR']]) {
+      for (const [value, label, detail] of [['cloudflare', 'Cloudflare', 'Token / 总控制密钥'], ['ssh', 'SSH', '密码 / 私钥'], ['windows', 'Windows', '远程桌面 / WinRM'], ['adb', 'Android / ADB', 'TCP / 无线调试'], ['alist', 'Alist', '账号密码'], ['github', 'GitHub', '用户名 + PAT'], ['docker', '镜像仓库', 'Docker Hub / GHCR']]) {
         const choice = button('', () => { type.value = value; renderFields(); }, 'secondary service-type-choice', { 'aria-pressed': type.value === value ? 'true' : 'false' });
         choice.append(node('strong', {}, label), node('span', {}, detail));
         typeButtons.push([choice, value]);
@@ -323,7 +331,7 @@
         choice.classList.toggle('active', type.value === value);
         choice.setAttribute('aria-pressed', type.value === value ? 'true' : 'false');
       }
-      const sectionTitles = { cloudflare: 'Cloudflare · 账号与密钥', ssh: 'SSH · 地址、账号与凭据', windows: 'Windows · 远程连接与账号密码', alist: 'Alist · 地址与账号密码', github: 'GitHub · 用户名与访问令牌', docker: '镜像仓库 · 账号与访问令牌' };
+      const sectionTitles = { cloudflare: 'Cloudflare · 账号与密钥', ssh: 'SSH · 地址、账号与凭据', windows: 'Windows · 远程连接与账号密码', adb: 'Android / ADB · 设备地址与认证信息', alist: 'Alist · 地址与账号密码', github: 'GitHub · 用户名与访问令牌', docker: '镜像仓库 · 账号与访问令牌' };
       dynamic.replaceChildren(node('div', { class: 'section-divider' }, sectionTitles[type.value]));
       const cfg = service?.config || {};
       const creds = service?.credentials || {};
@@ -418,6 +426,71 @@
           passwordField,
           node('p', { class: 'hint' }, '保存后可测试内网 TCP 端口是否可达；该测试不验证密码、Windows 身份或登录权限。'),
         );
+      } else if (type.value === 'adb') {
+        let previousMode = cfg.mode || 'tcp';
+        let externalPortEdited = Boolean(cfg.external_host);
+        const defaultPort = previousMode === 'tcp' ? 5555 : '';
+        controls.mode = node('select', { name: 'mode' }, node('option', { value: 'tcp' }, '传统 TCP ADB'), node('option', { value: 'wireless' }, '无线调试（配对）'));
+        controls.mode.value = previousMode;
+        controls.host = textInput('host', cfg.host || '', { required: true, placeholder: '例如 192.168.1.30 或设备域名' });
+        controls.port = textInput('port', cfg.port || defaultPort, { type: 'number', min: 1, max: 65535, required: true, placeholder: '设备当前的 ADB 连接端口' });
+        controls.external_host = textInput('external_host', cfg.external_host || '', { placeholder: '例如 android.example.com，留空不配置' });
+        controls.external_port = textInput('external_port', cfg.external_port || defaultPort, { type: 'number', min: 1, max: 65535, placeholder: '映射后的连接端口' });
+        controls.pairing_port = textInput('pairing_port', cfg.pairing_port || '', { type: 'number', min: 1, max: 65535, placeholder: '设备「使用配对码配对」页面的端口' });
+        controls.external_pairing_port = textInput('external_pairing_port', cfg.external_pairing_port || '', { type: 'number', min: 1, max: 65535, placeholder: '配对服务的外网映射端口' });
+        const pairingCodeField = secretInput('临时配对码（选填）', 'pairing_code', creds.pairing_code, false,
+          '仅用于当前配对会话，以设备当前页面为准，不能长期复用。已保存时留空保留；清空配对端口并保存会移除已保存配对码。');
+        const pairingCode = $('input', pairingCodeField);
+        pairingCode.setAttribute('pattern', '[0-9]{6}');
+        pairingCode.setAttribute('inputmode', 'numeric');
+        pairingCode.setAttribute('maxlength', '6');
+        pairingCode.setAttribute('title', '填写设备当前显示的 6 位数字配对码，保留开头的 0。');
+        const pairingFields = node('fieldset', { class: 'ssh-external-settings adb-pairing-settings' },
+          node('legend', {}, '无线配对（选填）'),
+          node('div', { class: 'field-grid' }, field('内网配对端口', controls.pairing_port), field('外网配对端口（选填）', controls.external_pairing_port, '填写外网地址和内网配对端口后可设置。')),
+          pairingCodeField,
+          node('p', { class: 'hint' }, '配对端口与连接端口是两回事。配对码和端口可能变化；保存这些信息不会替设备或客户端完成配对。切回传统 TCP 并保存会移除配对信息。'),
+        );
+        const syncAvailability = () => {
+          const wireless = controls.mode.value === 'wireless';
+          const external = Boolean(controls.external_host.value.trim());
+          controls.external_port.disabled = !external;
+          controls.external_port.required = external;
+          pairingFields.hidden = !wireless;
+          controls.pairing_port.disabled = !wireless;
+          controls.pairing_port.required = wireless && Boolean(pairingCode.value);
+          controls.external_pairing_port.disabled = !wireless || !external || !controls.pairing_port.value;
+          pairingCode.disabled = !wireless || demo;
+        };
+        controls.external_host.addEventListener('input', syncAvailability);
+        controls.pairing_port.addEventListener('input', syncAvailability);
+        pairingCode.addEventListener('input', syncAvailability);
+        controls.external_port.addEventListener('input', () => { externalPortEdited = true; });
+        controls.mode.addEventListener('change', () => {
+          if (controls.mode.value === 'wireless' && previousMode === 'tcp') {
+            if (controls.port.value === '5555') controls.port.value = '';
+            if (!externalPortEdited && controls.external_port.value === '5555') controls.external_port.value = '';
+          } else if (controls.mode.value === 'tcp') {
+            if (!controls.port.value) controls.port.value = '5555';
+            if (!externalPortEdited && !controls.external_port.value) controls.external_port.value = '5555';
+          }
+          previousMode = controls.mode.value;
+          syncAvailability();
+        });
+        syncAvailability();
+        dynamic.append(
+          field('连接方式', controls.mode, '传统 TCP 通常使用 5555；无线调试请填写设备当前的连接端口，不填客户端 ADB server 的 5037。'),
+          node('div', { class: 'field-grid' }, field('内网地址（默认）', controls.host), field('内网 ADB 连接端口', controls.port)),
+          node('fieldset', { class: 'ssh-external-settings' },
+            node('legend', {}, '外网连接（选填）'),
+            node('div', { class: 'field-grid' }, field('外网域名或 IP', controls.external_host), field('外网连接映射端口', controls.external_port)),
+            node('p', { class: 'hint' }, '默认使用内网。外网填写映射后的地址和连接端口，共用同一 ADB 认证信息；地址不带协议或端口。'),
+          ),
+          secretInput('ADB 私钥（adbkey，选填）', 'private_key', creds.private_key, true,
+            '填写客户端 adbkey 文件内容。客户端已有被设备授权的 ADB 密钥时可留空；此处不填写 SSH 私钥或安卓锁屏密码。编辑时留空保留原值。'),
+          pairingFields,
+          node('p', { class: 'hint' }, '保存后仅测试内网连接端口的 TCP 连通性，不验证 ADB 协议、密钥授权或配对码；实际连接由客户端的 ADB 工具完成。'),
+        );
       } else if (type.value === 'alist') {
         controls.url = textInput('url', cfg.url || '', { type: 'url', required: true, placeholder: 'http://192.168.1.10:5244' });
         controls.username = textInput('username', cfg.username || '', { required: true, autocomplete: 'off', placeholder: 'Alist 用户名' });
@@ -452,12 +525,14 @@
           for (const [name, control] of Object.entries(controls)) {
             if (name === 'email' && controls.auth_method.value !== 'global_key') continue;
             if (name === 'external_port' && !controls.external_host.value.trim()) continue;
-            config[name] = ['port', 'external_port'].includes(name) ? Number(control.value) : control.value.trim();
+            if (['pairing_port', 'external_pairing_port'].includes(name) && (control.disabled || !control.value)) continue;
+            config[name] = ['port', 'external_port', 'pairing_port', 'external_pairing_port'].includes(name) ? Number(control.value) : control.value.trim();
           }
           let allowedSecrets;
           if (type.value === 'cloudflare') allowedSecrets = config.auth_method === 'global_key' ? ['global_api_key'] : ['token'];
           else if (['github', 'docker'].includes(type.value)) allowedSecrets = ['token'];
           else if (['alist', 'windows'].includes(type.value)) allowedSecrets = ['password'];
+          else if (type.value === 'adb') allowedSecrets = config.mode === 'wireless' && config.pairing_port ? ['private_key', 'pairing_code'] : ['private_key'];
           else allowedSecrets = config.auth_method === 'key' ? ['private_key', 'key_passphrase'] : ['password'];
           for (const name of allowedSecrets) {
             const input = form.elements.namedItem(name);
@@ -735,6 +810,7 @@
       { kind: 'cloudflare', alias: 'personal-cloud', description: '个人 Cloudflare 账号总控制密钥', config: { auth_method: 'global_key', email: 'example-user@example.com' }, credentials: { global_api_key: true } },
       { kind: 'ssh', alias: 'home-nas', description: '家里的飞牛 NAS · root 账号密码', config: { host: '192.0.2.10', port: 22, external_host: 'ssh.example.com', external_port: 2222, username: 'root', auth_method: 'password' }, credentials: { password: true } },
       { kind: 'windows', alias: '工作电脑', description: 'Windows 远程桌面 · 本地账号', config: { protocol: 'rdp', host: '192.0.2.20', port: 3389, external_host: 'windows.example.com', external_port: 13389, username: 'example-user', domain: 'DESKTOP' }, credentials: { password: true } },
+      { kind: 'adb', alias: '安卓测试机', description: 'Android 无线调试 · 内外网地址与选填认证信息', config: { mode: 'wireless', host: '192.0.2.30', port: 37123, external_host: 'android.example.com', external_port: 47123, pairing_port: 38215, external_pairing_port: 48215 }, credentials: { private_key: true, pairing_code: true } },
       { kind: 'alist', alias: 'family-files', description: '家庭 Alist 账号密码', config: { url: 'https://alist.example.com', username: 'example-user' }, credentials: { password: true } },
       { kind: 'github', alias: 'personal-github', description: '个人 GitHub 账号与 PAT', config: { owner: 'example-user' }, credentials: { token: true } },
       { kind: 'docker', alias: 'dockerhub-images', description: 'Docker Hub 登录凭据', config: { registry: 'docker.io', username: 'example-user', namespace: 'example-user' }, credentials: { token: true } },

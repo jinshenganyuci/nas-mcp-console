@@ -51,7 +51,7 @@ config.pop('volumes', None)
 PY
 
 # No data directory or local credentials may be present in the shipped image.
-docker run --rm --pull=never --entrypoint python "$smoke_image" -c 'from pathlib import Path; import os; assert os.getuid() == 1000; assert not list(Path("/data").iterdir()); assert not Path("/app/.env").exists(); assert not Path("/app/data").exists()'
+docker run --rm --name "$smoke_project-image-check" --label "com.nas-mcp.smoke-project=$smoke_project" --pull=never --entrypoint python "$smoke_image" -c 'from pathlib import Path; import os; assert os.getuid() == 1000; assert not list(Path("/data").iterdir()); assert not Path("/app/.env").exists(); assert not Path("/app/data").exists()'
 compose up -d --wait --wait-timeout 90
 compose exec -T nas-mcp python - "$smoke_uid" "$smoke_gid" <<'PY'
 import json, os, sys, urllib.error, urllib.request
@@ -85,9 +85,11 @@ login = post('/api/login', {'password': password})
 session = post('/api/password', {'current_password': password, 'new_password': 'container-smoke-test-password'}, login['csrf_token'])
 post('/api/services', {'kind': 'ssh', 'alias': '容器持久化测试', 'config': {'host': '192.0.2.10', 'port': 22, 'external_host': 'ssh.example.com', 'external_port': 2222, 'username': 'root', 'auth_method': 'password'}, 'secrets': {'password': 'synthetic-container-credential'}}, session['csrf_token'])
 post('/api/services', {'kind': 'windows', 'alias': 'Windows持久化测试', 'config': {'host': '192.0.2.20', 'protocol': 'winrm_https', 'external_host': 'windows.example.com', 'external_port': 15986, 'username': 'Administrator', 'domain': 'LAB'}, 'secrets': {'password': 'synthetic-windows-container-password'}}, session['csrf_token'])
+post('/api/services', {'kind': 'adb', 'alias': '安卓持久化测试', 'config': {'host': '192.0.2.30', 'port': 37123, 'mode': 'wireless', 'pairing_port': 37234, 'external_host': 'android.example.com', 'external_port': 17123, 'external_pairing_port': 17234}, 'secrets': {'private_key': 'synthetic-adb-container-key', 'pairing_code': '012345'}}, session['csrf_token'])
 assert not (data / 'first-login.txt').exists()
 assert 'synthetic-container-credential' not in (data / 'vault.json').read_text()
 assert 'synthetic-windows-container-password' not in (data / 'vault.json').read_text()
+assert 'synthetic-adb-container-key' not in (data / 'vault.json').read_text()
 print('First boot, non-root bind-mount access, login, and encrypted save passed')
 PY
 
@@ -118,6 +120,9 @@ assert record['connection']['external_port'] == 2222
 windows = store.export_credential('windows/Windows持久化测试', ['*'])
 assert windows['credentials'] == {'password': 'synthetic-windows-container-password'}
 assert windows['connection'] == {'host': '192.0.2.20', 'port': 5986, 'protocol': 'winrm_https', 'external_host': 'windows.example.com', 'external_port': 15986, 'username': 'Administrator', 'domain': 'LAB'}
+adb = store.export_credential('adb/安卓持久化测试', ['*'])
+assert adb['credentials'] == {'private_key': 'synthetic-adb-container-key', 'pairing_code': '012345'}
+assert adb['connection'] == {'host': '192.0.2.30', 'port': 37123, 'mode': 'wireless', 'pairing_port': 37234, 'external_host': 'android.example.com', 'external_port': 17123, 'external_pairing_port': 17234}
 assert not Path('/data/first-login.txt').exists()
 for name in ('master.key', 'vault.json', 'state.json', 'oauth.json'):
     assert (data / name).stat().st_uid == uid

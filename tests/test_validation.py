@@ -445,3 +445,52 @@ def test_windows_invalid_endpoint_does_not_connect(changes):
     result = validate_credential(record("windows", {"host": "win.internal", **changes}, {"password": SECRET}))
     assert result["ok"] is False and SECRET not in json.dumps(result)
     validation.socket.create_connection.assert_not_called()
+
+
+@pytest.mark.parametrize("connection,port", [
+    ({"host": "192.0.2.40"}, 5555),
+    ({"host": "2001:db8::40", "mode": "tcp", "port": 15555}, 15555),
+    ({"host": "android.internal", "mode": "wireless", "port": 37123, "pairing_port": 38999,
+      "external_host": "android.example.com", "external_port": 47123, "external_pairing_port": 48999}, 37123),
+])
+def test_adb_only_probes_internal_connection_port_and_sends_no_secrets(monkeypatch, connection, port):
+    sock = MagicMock()
+    connect = MagicMock(return_value=sock)
+    monkeypatch.setattr(validation.socket, "create_connection", connect)
+    result = validate_credential(record("adb", connection, {"private_key": SECRET, "pairing_code": "001234"}))
+    connect.assert_called_once_with((connection["host"], port), timeout=8.0)
+    assert result["ok"] is True
+    assert "仅验证 TCP" in result["message"] and "未验证 ADB 协议、设备授权或配对" in result["message"]
+    assert SECRET not in json.dumps(result) and "001234" not in json.dumps(result)
+    assert "verified_known_hosts" not in result
+    assert [call[0] for call in sock.method_calls] == ["close"]
+
+
+def test_adb_endpoint_only_record_can_be_tested(monkeypatch):
+    sock = MagicMock()
+    monkeypatch.setattr(validation.socket, "create_connection", MagicMock(return_value=sock))
+    result = validate_credential({"kind": "adb", "connection": {"host": "192.0.2.40"}, "credentials": {}})
+    assert result["ok"] is True
+    sock.close.assert_called_once()
+
+
+@pytest.mark.parametrize("error", [TimeoutError(SECRET), ConnectionRefusedError(SECRET), OSError(SECRET)])
+def test_adb_unreachable_connection_port_returns_sanitized_result(monkeypatch, error):
+    connect = MagicMock(side_effect=error)
+    monkeypatch.setattr(validation.socket, "create_connection", connect)
+    result = validate_credential(record("adb", {"host": "android.internal"}, {"private_key": SECRET}))
+    assert result["ok"] is False and SECRET not in json.dumps(result)
+    assert "内网连接端口" in result["message"] and "未验证设备授权或配对" in result["message"]
+    assert "超时" in result["message"] if isinstance(error, TimeoutError) else "无法连接" in result["message"]
+
+
+@pytest.mark.parametrize("changes", [
+    {"host": "https://android.example.com"}, {"host": "user@android.example.com"},
+    {"host": "android.example.com:5555"}, {"port": False}, {"port": 65536},
+    {"port": 0}, {"port": "5555"}, {"mode": "unknown"}, {"mode": []},
+    {"mode": "wireless"}, {"mode": "wireless", "port": None},
+])
+def test_adb_invalid_connection_endpoint_does_not_connect(changes):
+    result = validate_credential(record("adb", {"host": "android.internal", **changes}, {"private_key": SECRET}))
+    assert result["ok"] is False and SECRET not in json.dumps(result)
+    validation.socket.create_connection.assert_not_called()

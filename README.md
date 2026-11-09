@@ -1,6 +1,6 @@
 # 私人凭据库 · NAS MCP Console
 
-把 SSH、Windows 账号密码、API 密钥和 Token 保存在自己的 NAS，通过 MCP 提供给获准访问的 AI 客户端。配置一次连接，之后在新对话中按需取用，省去反复粘贴凭据。
+把 SSH、Windows 账号密码、Android ADB 连接信息、API 密钥和 Token 保存在自己的 NAS，通过 MCP 提供给获准访问的 AI 客户端。配置一次连接，之后在新对话中按需取用，省去反复粘贴凭据。
 
 中文可视化管理 · 中文凭据名称 · Docker Compose 部署 · Bearer Token / OAuth 授权 · `amd64` / `arm64`
 
@@ -9,10 +9,10 @@
 ## 这个项目能做什么
 
 - 在网页后台新增、编辑、删除凭据；支持中文名称，例如 `家里NAS`、`工作GitHub`。
-- 保存 SSH 密码或私钥、Windows 本地或域账号密码、Cloudflare API Token / Global API Key、Alist 账号密码、GitHub Token、Docker Hub / GHCR Token。
-- SSH 和 Windows 支持默认内网地址与可选外网域名、端口，共用同一登录凭据；已有条目无需重新填写。
-- Windows 可标注 RDP、WinRM HTTP 或 WinRM HTTPS，方便客户端选择连接方式。
-- 在配置时测试可用性：SSH 首次连接支持确认主机指纹；Windows 仅测试内网 TCP 端口，其余类型按各自范围验证认证。
+- 保存 SSH 密码或私钥、Windows 本地或域账号密码、Android ADB 私钥与临时配对信息、Cloudflare API Token / Global API Key、Alist 账号密码、GitHub Token、Docker Hub / GHCR Token。
+- SSH、Windows 和 ADB 支持默认内网地址与可选外网域名、端口，共用对应认证信息；已有条目无需重新填写。
+- Windows 可标注 RDP、WinRM HTTP 或 WinRM HTTPS；ADB 支持传统 TCP 与无线调试，连接端口与配对端口分别填写。
+- 在配置时测试可用性：SSH 首次连接支持确认主机指纹；Windows 和 ADB 仅测试内网 TCP 端口，其余类型按各自范围验证认证。
 - 给不同客户端单独授权全部凭据或指定条目，支持撤销。
 - 提供手动客户端 Token，以及内置 OAuth 登录、凭据范围选择和同意授权。
 - 将凭据加密保存在持久化目录中，容器更新后继续使用。
@@ -24,7 +24,7 @@ flowchart LR
     U[你：在网页后台录入凭据] --> V[NAS 上的私人凭据库]
     C[Codex / Hermes / 支持 MCP 的客户端] -->|客户端 Token 或 OAuth 授权| V
     V -->|返回获准读取的连接信息与秘密字段| C
-    C -->|使用自身工具与网络完成任务| S[SSH / Windows / Cloudflare / GitHub / 镜像仓库]
+    C -->|使用自身工具与网络完成任务| S[SSH / Windows / Android ADB / Cloudflare / GitHub / 镜像仓库]
 ```
 
 接入凭据库不会自动给客户端增加终端、SSH 或 Docker 能力；这些能力和目标网络的可达性由客户端环境决定。返回的秘密值会进入调用客户端的工具上下文，客户端之后的处理和保存由该客户端控制。
@@ -35,7 +35,7 @@ flowchart LR
 | --- | --- |
 | 在飞牛或其他 NAS 上部署，调整端口和 `./data` | [部署指南](docs/deployment.md) |
 | 配置 Lucky / HTTPS、理解“允许的 Host” | [访问入口与反向代理](docs/deployment.md#access) |
-| 录入 SSH、Windows、Cloudflare、Alist、GitHub、Docker 凭据 | [凭据配置指南](docs/credentials.md) |
+| 录入 SSH、Windows、Android ADB、Cloudflare、Alist、GitHub、Docker 凭据 | [凭据配置指南](docs/credentials.md) |
 | 给 Codex / Hermes 添加 MCP，让新对话继续用 | [客户端接入指南](docs/clients.md) |
 | 从支持的 ChatGPT 自定义 MCP 页面使用 OAuth 添加 | [客户端接入指南](docs/clients.md) |
 | 更新 `latest`、备份、恢复或迁移旧卷 | [升级与备份](docs/deployment.md#maintenance) |
@@ -44,16 +44,24 @@ flowchart LR
 
 ## 镜像与版本
 
-当前发布版本为 **0.5.0**，提供 `linux/amd64`、`linux/arm64` 镜像。
+当前发布版本为 **0.6.0**，提供 `linux/amd64`、`linux/arm64` 镜像。
 
-0.5.0 新增 Windows 凭据：保存连接协议、内外网地址、用户名、可选域和密码。通过现有 MCP 工具按授权读取，后台提供内网端口连通性测试。升级保留已有凭据和授权。
+0.6.0 新增 Android / ADB 凭据：支持传统 TCP 和无线调试，保存内外网入口、可选 ADB 私钥及临时配对信息。通过现有 MCP 工具按授权读取，后台仅测试内网连接端口。升级保留已有凭据和授权。
+
+0.5.0 已加入 Windows 凭据，支持 RDP、WinRM 连接信息及本地或域账号密码。
 
 | 镜像仓库 | 跟随最新发布 | 固定版本 |
 | --- | --- | --- |
-| [Docker Hub](https://hub.docker.com/r/jinshenganyuci/nas-mcp-console) | `docker.io/jinshenganyuci/nas-mcp-console:latest` | `docker.io/jinshenganyuci/nas-mcp-console:0.5.0` |
-| [GHCR](https://github.com/jinshenganyuci/nas-mcp-console/pkgs/container/nas-mcp-console) | `ghcr.io/jinshenganyuci/nas-mcp-console:latest` | `ghcr.io/jinshenganyuci/nas-mcp-console:0.5.0` |
+| [Docker Hub](https://hub.docker.com/r/jinshenganyuci/nas-mcp-console) | `docker.io/jinshenganyuci/nas-mcp-console:latest` | `docker.io/jinshenganyuci/nas-mcp-console:0.6.0` |
+| [GHCR](https://github.com/jinshenganyuci/nas-mcp-console/pkgs/container/nas-mcp-console) | `ghcr.io/jinshenganyuci/nas-mcp-console:latest` | `ghcr.io/jinshenganyuci/nas-mcp-console:0.6.0` |
 
 两处镜像均公开，拉取本项目镜像无需先配置 GitHub 或 Docker Hub 凭据。[发布记录](https://github.com/jinshenganyuci/nas-mcp-console/releases)
+
+## Android / ADB
+
+从 0.6.0 起，Android 远程 ADB 凭据支持传统 TCP ADB 与无线调试，保存默认内网、可选外网地址，以及选填的 ADB 私钥和临时配对码。连接端口与无线配对端口分别填写，也可以只保存地址而不录入秘密值。
+
+后台仅检查内网连接端口是否可达，不执行 ADB 配对或设备命令；实际连接仍由客户端完成。字段和操作说明见 [Android / ADB 配置](docs/credentials.md#android-adb) 与 [MCP 取用方式](docs/clients.md#android-adb)。
 
 ## 快速开始：飞牛 Docker Compose
 
@@ -66,7 +74,7 @@ flowchart LR
 最常需要调整的是这三项，修改时保留 Compose 的其他配置：
 
 ```yaml
-# 跟随最新版本时修改 image；希望固定版本则保留原来的 :0.5.0
+# 跟随最新版本时修改 image；希望固定版本则保留原来的 :0.6.0
 image: docker.io/jinshenganyuci/nas-mcp-console:latest
 
 # 左边是 NAS 访问端口，右边的容器端口保持 8090
@@ -91,7 +99,7 @@ docker compose -f compose.fnos.yaml ps
 ## 第一次使用
 
 1. **录入凭据。** 在后台添加条目，例如类型选 SSH，名称填 `家里NAS`，再填写主机地址、用户名 `root` 和密码。名称是用于查找的标签，与登录用户名不同。
-2. **测试可用性。** 点击后台的测试功能，按结果说明检查配置。Windows 的「测试内网端口」只验证 TCP 连通，不验证密码或登录权限；其他类型的认证测试也不代表所有业务操作都有权限。
+2. **测试可用性。** 点击后台的测试功能，按结果说明检查配置。Windows 和 ADB 的「测试内网端口」只验证 TCP 连通，不验证密码、配对或设备授权；其他类型的认证测试也不代表所有业务操作都有权限。
 3. **配置入口。** 内网先通过 NAS IP 使用；外网或网页登录授权按[HTTPS 指南](docs/deployment.md#access)设置域名和反向代理。
 4. **授权客户端。** 在“客户端授权”中新建 `我的Codex` 或 `我的Hermes`，选择允许读取的条目，保存只显示一次的客户端 Token；也可用内置 OAuth 授权。
 5. **接入并验证。** 按[客户端指南](docs/clients.md)保存连接，先测试列出条目，再开始使用。

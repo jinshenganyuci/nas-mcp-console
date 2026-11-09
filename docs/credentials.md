@@ -8,7 +8,7 @@
 
 1. 在后台选择「添加凭据」或对应类型的添加按钮。
 2. 填写凭据名称、连接信息和秘密值，点击保存。
-3. 在条目卡片点击测试按钮。SSH 为「测试内网」，Windows 为「测试内网端口」；Windows 仅检查 TCP 连通，其他类型按下文各自范围验证认证。
+3. 在条目卡片点击测试按钮。SSH 为「测试内网」，Windows 和 ADB 为「测试内网端口」；这两种类型仅检查 TCP 连通，其他类型按下文各自范围验证认证。
 4. 到「客户端授权」把这个条目授予需要使用它的客户端。指定条目的旧授权不会自动包含其他新条目；选择「全部凭据」的授权会包含未来新增条目。
 
 ### 凭据名称、备注和用户名分别是什么
@@ -95,6 +95,44 @@ MCP 条目 ID 形如 `windows/办公电脑`，`connection` 包含 `protocol`（`
 ```
 
 新增 Windows 条目后，检查现有客户端的授权范围：选择「全部凭据」的授权会包含新条目；限定条目的授权需要重新创建并包含它。保存好客户端连接后，新对话按相同流程读取即可。详见[客户端接入](clients.md)。
+
+<a id="android-adb"></a>
+
+## Android / ADB
+
+从 0.6.0 起，选择「Android / ADB」即可保存 Android 设备的连接信息；只填地址和端口也能保存，没有用户名、系统密码或必填密钥。
+
+| 后台字段 | 如何填写 |
+| --- | --- |
+| 连接方式 | 默认「传统 TCP ADB」；使用设备「无线调试」功能时选择「无线调试（配对）」 |
+| 内网地址（默认） | Android 设备 IP 或域名，例如 `192.168.1.40`，不带协议、路径或端口 |
+| 内网 ADB 连接端口 | 传统 TCP 默认 `5555`；无线调试必须填写设备当前「IP 地址和端口」中的连接端口 |
+| 外网域名或 IP / 外网连接映射端口 | 可选，填写映射到同一设备连接端口的入口，例如 `android.example.com:15555`；地址与端口分栏填写 |
+| 内网配对端口 | 仅无线调试选填，来自设备「使用配对码配对设备」窗口；已配对时可以不填 |
+| 外网配对端口（选填） | 仅在需要从外网配对时填写；使用同一外网域名，并依赖已填写的内网配对端口 |
+| ADB 私钥（adbkey，选填） | 粘贴客户端已使用的 `adbkey` 私钥完整内容，保留开头、结尾和换行 |
+| 临时配对码（选填） | 设备当前配对窗口显示的 6 位数字，保留开头的 `0`；填写时必须同时设置内网配对端口 |
+
+**传统 TCP ADB 的最简配置：**选择传统 TCP，填写设备内网地址和实际 ADB 端口，保存即可。如果客户端已有获设备授权的密钥，可以不在本库重复录入。设备必须已经开放相应 ADB 服务；保存条目不会替设备开启调试。`5555` 是常用设备连接端口，`5037` 是电脑端 ADB server 的默认端口，不应混填。[ADB 官方手册](https://android.googlesource.com/platform/packages/modules/adb/+/HEAD/docs/user/adb.1.md)
+
+**无线调试需要区分两组端口：**先在 Android 的「开发者选项 → 无线调试」查看连接端口；需要首次配对时，再打开「使用配对码配对设备」取得配对端口和配对码。两个端口通常不同，不能互相替代，也不能把无线连接端口固定假定为 `5555`。[Android 配对步骤](https://developer.android.com/tools/adb#connect-to-a-device-over-wi-fi)、[ADB Wi-Fi 架构](https://android.googlesource.com/platform/packages/modules/adb/+/HEAD/docs/dev/adb_wifi.md)
+
+例如，设备显示连接端口 `37123`、配对端口 `40875`，外部映射分别为 `13712`、`14087`，则填写：
+
+| 用途 | 内网地址与端口 | 外网地址与端口 |
+| --- | --- | --- |
+| ADB 连接 | `192.168.1.40:37123` | `android.example.com:13712` |
+| 无线配对 | `192.168.1.40:40875` | `android.example.com:14087` |
+
+默认使用内网，用户明确指定外网时客户端才选择外网字段。外网地址只是保存连接入口，不会自动配置映射或让 mDNS 穿过路由；传统 TCP ADB 的传输本身不加密，跨网络使用时应通过已配置的 VPN 或安全隧道承载。[ADB Wi-Fi 架构](https://android.googlesource.com/platform/packages/modules/adb/+/HEAD/docs/dev/adb_wifi.md)
+
+配对码是当前配对流程的临时信息，不是长期密码；配对窗口关闭、重新生成配对信息后应以设备当前显示为准。连接和配对端口也可能变化。编辑时私钥、配对码留空会保留已保存值；**清空内网配对端口会移除已保存配对码，切回传统 TCP 会移除配对信息和配对码**。[Android 配对操作](https://developer.android.com/tools/adb#connect-to-a-device-over-wi-fi)、[AOSP 配对服务](https://android.googlesource.com/platform/frameworks/base/+/refs/heads/android13-release/services/core/java/com/android/server/adb/AdbDebuggingManager.java)
+
+ADB 私钥用于客户端的设备认证，应填写你已确认可信的 ADB 客户端所使用的 `adbkey`，不要误贴 SSH 密钥或安卓锁屏密码。本库不另存公钥，ADB 可从私钥派生对应的 ADB 格式公钥。复制私钥也不保证新客户端自动恢复全部无线配对状态：自动发现还涉及客户端的设备 GUID 记录，实际能否连接取决于设备授权、客户端状态和网络。[ADB 密钥实现](https://android.googlesource.com/platform/packages/modules/adb/+/HEAD/client/auth.cpp)、[无线配对状态实现](https://android.googlesource.com/platform/packages/modules/adb/+/HEAD/client/adb_wifi.cpp)
+
+后台「测试内网端口」只从凭据库容器检查内网 **ADB 连接端口**的 TCP 连通性，不测试配对端口，不发送私钥或配对码，不确认 ADB 协议、设备身份或调试授权。实际的 `adb pair`、`adb connect` 和设备操作由拥有相应工具的客户端按用户请求执行。
+
+保存后，给需要使用它的客户端授权该条目。MCP 类型为 `adb`，可读取的秘密字段只有已保存的 `private_key` 和 `pairing_code`；地址、连接方式和端口属于 `connection`。只保存地址的条目没有秘密字段，客户端直接使用查询结果即可。具体示例见 [ADB 客户端取用](clients.md#android-adb)。
 
 ## Cloudflare：API Token 或 Global API Key
 
@@ -258,6 +296,6 @@ GitHub 条目和 GHCR 条目可以保存同一个有相应权限的 PAT，也可
 | SSH 提示主机指纹不匹配 | 核对目标主机和密钥变更，不能仅凭 IP 相同就认定是原服务器 |
 | Alist 测试失败 | 检查基础地址、账号密码、OTP 要求和服务是否能从容器访问 |
 | Cloudflare 账户级 Token 测试失败 | 参照上面的账户级 Token 限制，用正确验证接口或业务接口检查 |
-| NAS 测试成功，异地客户端仍连不上 SSH / Windows / Alist | 检查客户端到目标服务的网络；MCP 取用凭据不会自动打通内网 |
+| NAS 测试成功，异地客户端仍连不上 SSH / Windows / ADB / Alist | 检查客户端到目标服务的网络；MCP 取用凭据不会自动打通内网 |
 
 后台测试结果只记录成功与否、简短说明和时间。连接配置和秘密值变更后重新测试；过期或被撤销的上游 Token 需要到对应平台重新生成，再编辑本库条目替换。保持条目名称不变时，原客户端对这个条目的授权会继续有效。

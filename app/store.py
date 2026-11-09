@@ -27,7 +27,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from .oauth import build_oauth
 
 
-KINDS = ("cloudflare", "ssh", "windows", "alist", "github", "docker")
+KINDS = ("cloudflare", "ssh", "windows", "adb", "alist", "github", "docker")
 WINDOWS_PORTS = {"rdp": 3389, "winrm_http": 5985, "winrm_https": 5986}
 # Unicode word characters include four invisible Hangul fillers; exclude them
 # as well as the whitespace, combining marks and controls rejected by \w.
@@ -41,11 +41,13 @@ SECRET_FIELDS = {
     "private_key": "key_file",
     "key_passphrase": "key_passphrase_file",
     "known_hosts": "known_hosts_file",
+    "pairing_code": "pairing_code_file",
 }
 KIND_SECRETS = {
     "cloudflare": {"token", "global_api_key"},
     "ssh": {"password", "private_key", "key_passphrase", "known_hosts"},
     "windows": {"password"},
+    "adb": {"private_key", "pairing_code"},
     "alist": {"password"},
     "github": {"token"},
     "docker": {"token"},
@@ -369,6 +371,27 @@ class Store:
                 raise ValueError("Windows domain must be a domain or computer name, without a username")
             result.update(username=username, domain=domain, protocol=protocol)
             return result
+        if kind == "adb":
+            _check_keys(config, {"host", "port", "external_host", "external_port", "mode", "pairing_port", "external_pairing_port"}, "ADB config")
+            mode = config.get("mode", "tcp")
+            if not isinstance(mode, str) or mode not in {"tcp", "wireless"}:
+                raise ValueError("ADB mode must be tcp or wireless")
+            if mode == "wireless" and "port" not in config:
+                raise ValueError("ADB wireless connection port is required")
+            result = _endpoints(config, "ADB", config["port"] if mode == "wireless" else 5555)
+            result["mode"] = mode
+            # Pairing information belongs only to wireless debugging. Switching
+            # to TCP deliberately retires it, including the encrypted code.
+            if mode == "wireless":
+                for field in ("pairing_port", "external_pairing_port"):
+                    if field in config:
+                        port = config[field]
+                        if type(port) is not int or not 1 <= port <= 65535:
+                            raise ValueError(f"ADB {field} must be between 1 and 65535")
+                        result[field] = port
+                if "external_pairing_port" in result and "pairing_port" not in result:
+                    raise ValueError("ADB external pairing port requires a pairing port")
+            return result
         _check_keys(config, {"url", "username"}, "Alist config")
         return {"url": _url(config.get("url")), "username": _text(config.get("username"), "Alist username", 256)}
 
@@ -387,17 +410,27 @@ class Store:
             allowed -= {"private_key", "key_passphrase"} if cfg["auth_method"] == "password" else {"password"}
         if kind == "cloudflare":
             allowed -= {"global_api_key"} if cfg["auth_method"] == "api_token" else {"token"}
+        if kind == "adb":
+            code = values.get("pairing_code", "")
+            if code and not re.fullmatch(r"[0-9]{6}", code):
+                raise ValueError("ADB pairing code must contain exactly six ASCII digits")
+            if cfg["mode"] != "wireless" or "pairing_port" not in cfg:
+                if code:
+                    raise ValueError("ADB pairing code requires wireless mode and a pairing port")
+                allowed.discard("pairing_code")
         with self._lock:
             old = self._state["config"][kind].get(alias, {})
             if kind == "windows" and not values.get("password", "").strip() and old.get("password_file") not in self._vault:
                 raise ValueError("Windows password is required when creating a credential")
-            if kind in {"ssh", "windows"} and not {"external_host", "external_port"}.intersection(payload.get("config", {})):
+            if kind in {"ssh", "windows", "adb"} and not {"external_host", "external_port"}.intersection(payload.get("config", {})):
                 # An older client cannot edit the optional external endpoint.
                 # Preserve it when both keys are absent; an explicit blank host
                 # from the new form removes it without affecting login secrets.
                 for field in ("external_host", "external_port"):
                     if field in old:
                         cfg[field] = old[field]
+            if kind == "adb" and "external_pairing_port" in cfg and "external_host" not in cfg:
+                raise ValueError("ADB external pairing port requires an external host")
             vault = self._vault.copy()
             if kind == "ssh" and (
                 (old.get("host"), old.get("port", 22)) != (cfg["host"], cfg["port"])

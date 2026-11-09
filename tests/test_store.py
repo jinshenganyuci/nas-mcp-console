@@ -31,6 +31,10 @@ def windows(password="windows-password-that-must-stay-private", **config):
     return {"kind": "windows", "alias": "办公电脑", "config": {"host": "192.0.2.30", "username": "Administrator", **config}, "secrets": {"password": password}}
 
 
+def adb(secrets=None, **config):
+    return {"kind": "adb", "alias": "安卓设备", "config": {"host": "192.0.2.40", **config}, "secrets": secrets or {}}
+
+
 def test_persistent_recovery_without_plaintext_files(store):
     secret = "cf-super-secret-token-123"
     store.save_service(cloudflare(secret))
@@ -699,3 +703,166 @@ def test_upgrade_adds_windows_without_changing_existing_credentials_or_grants(st
     restored.save_service(windows())
     assert len(restored.metadata(["*"])) == 2
     assert len(restored.metadata(["ssh/nas"])) == 1
+
+
+def test_adb_tcp_endpoint_can_be_saved_without_secrets(store):
+    store.save_service(adb())
+    result = Store(store.data_dir).export_credential("adb/安卓设备", ["adb/安卓设备"])
+    assert result["connection"] == {"host": "192.0.2.40", "port": 5555, "mode": "tcp"}
+    assert store.metadata(["adb/安卓设备"])[0]["available_fields"] == []
+    assert result["credentials"] == {}
+
+
+def test_adb_wireless_persists_encrypted_keys_and_pairing_code_with_exact_scope(store):
+    secrets = {"private_key": "synthetic-adb-private-key\nsecond-line", "pairing_code": "001234"}
+    config = {"mode": "wireless", "port": 37123, "pairing_port": 38999,
+              "external_host": "android.example.com", "external_port": 47123, "external_pairing_port": 48999}
+    store.save_service(adb(secrets, **config))
+    store.save_service(ssh(password="unrelated-secret") | {"alias": "安卓设备"})
+    client = store.create_client("ADB only", ["adb/安卓设备"])
+    persisted = (store.data_dir / "state.json").read_text() + (store.data_dir / "vault.json").read_text()
+    for secret in secrets.values():
+        assert secret not in persisted and secret not in json.dumps(store.services())
+    restored = Store(store.data_dir)
+    allowed = restored.client_for_token(client["token"])["allowed_services"]
+    metadata = restored.metadata(allowed)
+    assert [item["id"] for item in metadata] == ["adb/安卓设备"]
+    assert metadata[0]["available_fields"] == ["private_key", "pairing_code"]
+    assert metadata[0]["connection"] == {"host": "192.0.2.40", **config}
+    assert all(secret not in json.dumps(metadata) for secret in secrets.values())
+    result = restored.export_credential("adb/安卓设备", allowed)
+    assert result["credentials"] == secrets
+    assert restored.export_credential("adb/安卓设备", allowed, ["pairing_code"])["credentials"] == {"pairing_code": "001234"}
+    assert restored.export_credential("adb/安卓设备", allowed, [])["credentials"] == {}
+    with pytest.raises(ValueError, match="Credential unavailable"):
+        restored.export_credential("ssh/安卓设备", allowed)
+    with pytest.raises(ValueError, match="Credential unavailable"):
+        restored.export_credential("adb/安卓设备", ["ssh/安卓设备"])
+    with pytest.raises(ValueError, match="Requested credential field unavailable"):
+        restored.export_credential("adb/安卓设备", allowed, ["password"])
+
+
+@pytest.mark.parametrize("config,port", [
+    ({"external_host": "android.example.com"}, 5555),
+    ({"mode": "tcp", "port": 5556, "external_host": "2001:db8::40"}, 5555),
+    ({"mode": "wireless", "port": 37123, "external_host": "android.example.com"}, 37123),
+])
+def test_adb_optional_external_connection_defaults_and_no_implicit_pairing_port(store, config, port):
+    store.save_service(adb(**config))
+    connection = store.metadata(["*"])[0]["connection"]
+    assert connection["external_port"] == port
+    assert "pairing_port" not in connection and "external_pairing_port" not in connection
+
+
+def test_adb_blank_secret_edits_preserve_identity_and_code_then_mode_switch_retires_pairing(store):
+    secrets = {"private_key": "adb-key-to-retain", "pairing_code": "001234"}
+    config = {"mode": "wireless", "port": 37123, "pairing_port": 38999,
+              "external_host": "android.example.com", "external_port": 47123, "external_pairing_port": 48999}
+    store.save_service(adb(secrets, **config))
+    store.save_service(adb({"private_key": "", "pairing_code": ""}, **config))
+    assert store.export_credential("adb/安卓设备", ["*"])["credentials"] == secrets
+    config.update(mode="tcp", port=5555)
+    store.save_service(adb(**config))
+    result = Store(store.data_dir).export_credential("adb/安卓设备", ["*"])
+    assert result["credentials"] == {"private_key": secrets["private_key"]}
+    assert "pairing_port" not in result["connection"] and "external_pairing_port" not in result["connection"]
+    assert result["connection"]["external_port"] == 47123
+    assert "adb--安卓设备--pairing_code.secret" not in json.loads((store.data_dir / "vault.json").read_text())
+
+
+def test_adb_clearing_pairing_port_removes_stored_code_but_preserves_private_key(store):
+    store.save_service(adb({"private_key": "adb-key", "pairing_code": "654321"}, mode="wireless", port=37123,
+                           pairing_port=38999, external_host="android.example.com", external_pairing_port=48999))
+    store.save_service(adb(mode="wireless", port=37124))
+    result = Store(store.data_dir).export_credential("adb/安卓设备", ["*"])
+    assert result["credentials"] == {"private_key": "adb-key"}
+    assert result["connection"]["external_host"] == "android.example.com"
+    assert "pairing_port" not in result["connection"] and "external_pairing_port" not in result["connection"]
+
+
+def test_adb_older_client_preserves_external_connection_and_can_explicitly_clear_it(store):
+    store.save_service(adb({"private_key": "adb-key"}, external_host="android.example.com", external_port=15555))
+    store.save_service(adb({"private_key": ""}, host="192.0.2.41"))
+    result = store.export_credential("adb/安卓设备", ["*"])
+    assert result["connection"]["external_host"] == "android.example.com"
+    assert result["connection"]["external_port"] == 15555
+    assert result["credentials"] == {"private_key": "adb-key"}
+    store.save_service(adb(external_host=""))
+    result = Store(store.data_dir).export_credential("adb/安卓设备", ["*"])
+    assert "external_host" not in result["connection"] and "external_port" not in result["connection"]
+    assert result["credentials"] == {"private_key": "adb-key"}
+
+
+def test_adb_external_pairing_can_use_preserved_external_host_and_is_removed_with_mapping(store):
+    config = {"mode": "wireless", "port": 37123, "pairing_port": 38999}
+    store.save_service(adb(external_host="android.example.com", external_port=47123, **config))
+    store.save_service(adb(external_pairing_port=48999, **config))
+    assert store.export_credential("adb/安卓设备", ["*"])["connection"]["external_pairing_port"] == 48999
+    store.save_service(adb(external_host="", **config))
+    result = store.export_credential("adb/安卓设备", ["*"])
+    assert "external_host" not in result["connection"] and "external_pairing_port" not in result["connection"]
+
+
+@pytest.mark.parametrize("config", [
+    {"mode": None}, {"mode": []}, {"mode": "usb"}, {"mode": "wireless"},
+    {"host": "http://android.example.com"}, {"host": "android.example.com:5555"},
+    {"port": True}, {"port": 0}, {"port": 65536}, {"port": "5555"}, {"port": 5555.5},
+    {"mode": "wireless", "port": None},
+    {"mode": "wireless", "port": 37123, "pairing_port": "38999"},
+    {"mode": "wireless", "port": 37123, "pairing_port": 0},
+    {"mode": "wireless", "port": 37123, "pairing_port": 65536},
+    {"mode": "wireless", "port": 37123, "pairing_port": True},
+    {"mode": "wireless", "port": 37123, "external_pairing_port": 48999},
+    {"mode": "wireless", "port": 37123, "pairing_port": 38999, "external_pairing_port": 48999},
+    {"mode": "wireless", "port": 37123, "pairing_port": 38999, "external_host": "", "external_pairing_port": 48999},
+    {"mode": "wireless", "port": 37123, "pairing_port": 38999, "external_host": "android.example.com", "external_pairing_port": False},
+    {"external_port": 15555}, {"external_host": "android.example.com:15555"},
+    {"external_host": "android.example.com", "external_port": False},
+    {"username": "root"}, {"key_file": "injected.secret"},
+])
+def test_adb_invalid_config_does_not_mutate_existing_credential(store, config):
+    store.save_service(adb({"private_key": "keep-this-key"}))
+    before = (store.data_dir / "state.json").read_bytes(), (store.data_dir / "vault.json").read_bytes()
+    with pytest.raises(ValueError):
+        store.save_service(adb({"private_key": "must-not-save"}, **config))
+    assert before == ((store.data_dir / "state.json").read_bytes(), (store.data_dir / "vault.json").read_bytes())
+
+
+@pytest.mark.parametrize("code", ["12345", "1234567", "１２３４５６", "١٢٣٤٥٦", "12 456", "123456\n", " 123456", "      ", 123456, None])
+def test_adb_pairing_code_requires_exact_six_ascii_digits_without_mutation(store, code):
+    store.save_service(adb({"private_key": "keep-key"}))
+    before = (store.data_dir / "state.json").read_bytes(), (store.data_dir / "vault.json").read_bytes()
+    with pytest.raises(ValueError):
+        store.save_service(adb({"pairing_code": code}, mode="wireless", port=37123, pairing_port=38999))
+    assert before == ((store.data_dir / "state.json").read_bytes(), (store.data_dir / "vault.json").read_bytes())
+
+
+@pytest.mark.parametrize("config", [{}, {"mode": "tcp", "pairing_port": 38999}, {"mode": "wireless", "port": 37123}])
+def test_adb_new_pairing_code_requires_wireless_mode_and_pairing_port(store, config):
+    with pytest.raises(ValueError, match="requires wireless mode and a pairing port"):
+        store.save_service(adb({"pairing_code": "001234"}, **config))
+
+
+@pytest.mark.parametrize("field", ["password", "token", "known_hosts", "key_passphrase"])
+def test_adb_rejects_unrelated_secret_fields(store, field):
+    with pytest.raises(ValueError, match="unsupported fields"):
+        store.save_service(adb({field: "unrelated-secret"}))
+
+
+def test_upgrade_adds_adb_without_changing_existing_credentials_or_grants(store):
+    store.save_service(ssh(password="existing-ssh-password"))
+    store.save_service(windows())
+    client = store.create_client("Existing client", ["ssh/nas", "windows/办公电脑"])
+    state_path = store.data_dir / "state.json"
+    old_state = json.loads(state_path.read_text())
+    del old_state["config"]["adb"]
+    state_path.write_text(json.dumps(old_state))
+    old_vault = (store.data_dir / "vault.json").read_bytes()
+    restored = Store(store.data_dir)
+    assert json.loads(state_path.read_text())["config"]["adb"] == {}
+    assert (store.data_dir / "vault.json").read_bytes() == old_vault
+    assert restored.export_credential("ssh/nas", ["*"])["credentials"] == {"password": "existing-ssh-password"}
+    assert restored.client_for_token(client["token"])["allowed_services"] == ["ssh/nas", "windows/办公电脑"]
+    restored.save_service(adb())
+    assert len(restored.metadata(["*"])) == 3
+    assert len(restored.metadata(["ssh/nas", "windows/办公电脑"])) == 2

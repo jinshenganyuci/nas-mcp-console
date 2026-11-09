@@ -224,6 +224,41 @@ def test_windows_credentials_http_mcp_scope_edit_and_delete(web, protocol, port)
     assert result["isError"]
 
 
+@pytest.mark.parametrize("mode", ["tcp", "wireless"])
+def test_adb_http_mcp_scopes_and_optional_credentials(web, mode):
+    client, _, _ = web
+    headers = login(web)
+    connection = {"host": "192.0.2.30", "mode": mode, "port": 5555 if mode == "tcp" else 37123,
+                  "external_host": "android.example.com", "external_port": 15555}
+    if mode == "wireless":
+        connection.update(pairing_port=37234, external_pairing_port=17234)
+    payload = {"kind": "adb", "alias": "安卓设备", "config": connection, "secrets": {}}
+    assert client.post("/api/services", headers=headers, json=payload).status_code == 200
+    allowed = client.post("/api/clients", headers=headers,
+        json={"name": "adb-only", "allowed_services": ["adb/安卓设备"]}).json()["token"]
+    denied = client.post("/api/clients", headers=headers,
+        json={"name": "unrelated", "allowed_services": []}).json()["token"]
+    _, value = tool_result(client, allowed, "get_credentials", {"credential_id": "adb/安卓设备", "fields": []})
+    assert value["credentials"] == {} and value["connection"] == connection
+    payload["secrets"] = {"private_key": "synthetic-adb-key"}
+    if mode == "wireless":
+        payload["secrets"]["pairing_code"] = "012345"
+    assert client.post("/api/services", headers=headers, json=payload).status_code == 200
+    rows = client.get("/api/services")
+    assert "synthetic-adb-key" not in rows.text and "012345" not in rows.text
+    _, found = tool_result(client, allowed, "list_credentials", {"query": "android.example.com"})
+    assert found["count"] == 1 and found["credentials"][0]["connection"] == connection
+    assert set(found["credentials"][0]["available_fields"]) == set(payload["secrets"])
+    _, value = tool_result(client, allowed, "get_credentials", {"credential_id": "adb/安卓设备"})
+    assert value["credentials"] == payload["secrets"]
+    _, hidden = tool_result(client, denied, "list_credentials", {"query": "安卓设备"})
+    assert hidden == {"credentials": [], "count": 0}
+    forbidden, _ = tool_result(client, denied, "get_credentials", {"credential_id": "adb/安卓设备"})
+    assert forbidden["isError"] and "synthetic-adb-key" not in json.dumps(forbidden)
+    invalid, _ = tool_result(client, allowed, "get_credentials", {"credential_id": "adb/安卓设备", "fields": ["password"]})
+    assert invalid["isError"]
+
+
 def test_chinese_credential_name_http_mcp_scope_and_encoded_routes(web, monkeypatch):
     client, _, _ = web
     headers = login(web)

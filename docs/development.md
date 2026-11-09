@@ -44,7 +44,7 @@ docker compose -f compose.yaml ps
 | --- | --- |
 | `app/server.py` | 管理 API、认证与访问入口校验、两个 MCP 工具 |
 | `app/store.py` | 凭据加密存储、条目管理、客户端 Token 与授权范围 |
-| `app/validation.py` | SSH、Cloudflare、Alist、GitHub、镜像仓库认证测试，以及 Windows 内网 TCP 连通性测试 |
+| `app/validation.py` | SSH、Cloudflare、Alist、GitHub、镜像仓库认证测试，以及 Windows / ADB 内网 TCP 连通性测试 |
 | `app/oauth_server.py` | OAuth 发现、注册、授权、Token 与撤销协议 |
 | `app/oauth_store.py` | OAuth 持久化、授权码与刷新轮换、到期与撤销 |
 | `app/static/` | 中文管理界面与 OAuth 同意页面 |
@@ -76,7 +76,7 @@ sh tests/container-smoke.sh nas-mcp-console:smoke
 
 ## 发布镜像
 
-仓库工作流在推送 `v*` 标签或手动运行 `Publish container images` 时发布。手动输入和版本标签都必须是稳定语义版本，例如 `0.5.0`，不接受随意的标签字符串。
+仓库工作流在推送 `v*` 标签或手动运行 `Publish container images` 时发布。手动输入和版本标签都必须是稳定语义版本，例如 `0.6.0`，不接受随意的标签字符串。
 
 维护者需要在 GitHub 仓库的 Actions 设置中配置：
 

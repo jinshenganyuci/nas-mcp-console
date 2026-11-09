@@ -65,6 +65,13 @@ def verify_access(token):
     content = result.get('structuredContent') or json.loads(result['content'][0]['text'])
     assert content['credentials'] == {'password': 'synthetic-windows-container-password'}
     assert content['connection'] == {'host': '192.0.2.20', 'port': 5986, 'protocol': 'winrm_https', 'external_host': 'windows.example.com', 'external_port': 15986, 'username': 'Administrator', 'domain': 'LAB'}
+    result = request('POST', '/mcp', {'jsonrpc': '2.0', 'id': 4, 'method': 'tools/call',
+        'params': {'name': 'get_credentials', 'arguments': {'credential_id': 'adb/安卓持久化测试', 'fields': ['private_key', 'pairing_code']}}}, headers=headers)['result']
+    assert not result.get('isError')
+    content = result.get('structuredContent') or json.loads(result['content'][0]['text'])
+    assert content['credentials'] == {'private_key': 'synthetic-adb-container-key', 'pairing_code': '012345'}
+    assert content['connection']['port'] == 37123 and content['connection']['pairing_port'] == 37234
+    assert content['connection']['external_port'] == 17123 and content['connection']['external_pairing_port'] == 17234
 
 
 if mode == 'start':
@@ -87,9 +94,9 @@ if mode == 'start':
     request('GET', '/oauth/consent?' + urlencode({'request': request_id}), raw=True)
     session = request('POST', '/api/login', {'password': 'container-smoke-test-password'})
     context = request('GET', '/api/oauth/request?' + urlencode({'request': request_id}))
-    assert context['authenticated'] and len(context['services']) == 2
+    assert context['authenticated'] and len(context['services']) == 3
     response = request('POST', '/api/oauth/decision', {'request_id': request_id, 'approve': True,
-        'allowed_services': ['ssh/容器持久化测试', 'windows/Windows持久化测试']}, headers={'X-CSRF-Token': session['csrf_token']})
+        'allowed_services': ['ssh/容器持久化测试', 'windows/Windows持久化测试', 'adb/安卓持久化测试']}, headers={'X-CSRF-Token': session['csrf_token']})
     query = parse_qs(urlsplit(response['redirect_url']).query)
     assert query['iss'] == [origin] and query['state'] == ['container-smoke']
     tokens = request('POST', '/token', {'grant_type': 'authorization_code', 'client_id': client['client_id'],
@@ -109,7 +116,7 @@ else:
     verify_access(tokens['access_token'])
     session = request('POST', '/api/login', {'password': 'container-smoke-test-password'})
     grants = request('GET', '/api/oauth/grants')['grants']
-    assert len(grants) == 1 and grants[0]['allowed_services'] == ['ssh/容器持久化测试', 'windows/Windows持久化测试']
+    assert len(grants) == 1 and set(grants[0]['allowed_services']) == {'ssh/容器持久化测试', 'windows/Windows持久化测试', 'adb/安卓持久化测试'}
     request('DELETE', '/api/oauth/grants/' + grants[0]['id'], headers={'X-CSRF-Token': session['csrf_token']})
     request('POST', '/mcp', {}, headers={'Authorization': 'Bearer ' + tokens['access_token']}, status=401)
     print('OAuth access and refresh survived container recreation; administrator revocation passed')
